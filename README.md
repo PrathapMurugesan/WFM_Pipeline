@@ -61,13 +61,29 @@ The instance's IAM role needs to read `nhai-dhms-uat/wfm_reports/*` (and write t
                         --project-master <xlsx|s3://> (gold ris_view), --output-s3 s3://<bucket>/<prefix>, --from silver
 ```
 
+## All logs of one run, in one place
+Every run, including a failed one, copies its logs into **one folder** per UPC and run (also uploaded to `<output-s3>/logs/...`):
+```
+output/logs/zone=B/phase=2/cycle=1/N-02001-12001-GJ/run=<time>/
+    pipeline.log                       everything bronze, silver and gold printed (the whole run)
+    bronze_d1_run.log .. d4            per deliverable: files found, header checks, rejections
+    bronze_d1_manifest.json .. d4      every workbook / sheet / file with its status
+    bronze_report.csv                  one row per file / sheet, problems in UPPER CASE
+    bronze_batch.json                  bronze summary
+    silver_run.log  silver_dq_summary.csv  silver_dq_mismatches.csv  silver_rule_checks.csv
+    gold_run.log
+    metadata.json                      the survey's Postgres rows
+    run_summary.json                   exit code, folders, which files were collected
+```
+The newest run of a UPC: `ls -td output/logs/*/*/*/<UPC>/run=* | head -1`. The cron trigger itself logs to `output/logs/trigger_<date>.log`.
+
 ## Output in S3 (`--output-s3`, or the environment variable `NSV_OUTPUT_S3`)
 The same layout as the earlier NSV pipeline, under `s3://dhms-new-stgae/NSV_Pipeline/`:
 ```
 bronze/nsv/zone=B/phase=2/cycle=1/<UPC>/d1..d4/run=<time>/     bronze/nsv/_batches/
 silver/zone=B/phase=2/cycle=1/<UPC>/run_date=<date>/           silver/_batches/
 gold/zone=B/phase=2/cycle=1/<UPC>/run_date=<date>/
-logs/pipeline_<time>_<UPC>.log     metadata/<survey id>.json     state/wfm_trigger_state.json
+logs/zone=B/phase=2/cycle=1/<UPC>/run=<time>/  (all logs of the run)     state/wfm_trigger_state.json
 ```
 
 ## Output (`./output`, or `--output`)

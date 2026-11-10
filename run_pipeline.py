@@ -119,12 +119,92 @@ def upload_file(local, s3_url):
     s3_client().upload_file(str(local), bucket, key)
 
 
-def newest_bronze_batch(out):
-    batches = sorted((out / "bronze" / "nsv" / "_batches").glob("batch=*.json"))
+def _latest_run(folder):
+    runs = sorted(Path(folder).glob("run=*")) if Path(folder).is_dir() else []
+    return runs[-1] if runs else None
+
+
+def collect_logs(ctx, code):
+    """
+    Every log of this run in ONE folder:  <output>/logs/<part>/run=<time>/   (+ the same path in S3)
+        pipeline.log                    everything printed by bronze, silver and gold (the full run)
+        bronze_d1_run.log .. d4         per deliverable: files found, header checks, rejections
+        bronze_d1_manifest.json .. d4   per deliverable: every workbook / sheet / file with its status
+        bronze_report.csv               one row per file / sheet - problems in UPPER CASE
+        bronze_batch.json               bronze summary (accepted, totals)
+        silver_run.log, silver_dq_summary.csv, silver_dq_mismatches.csv, silver_rule_checks.csv
+        gold_run.log
+        metadata.json                   the survey's Postgres rows (zone / phase / cycle / UPC, approvals)
+        run_summary.json                exit code, layers, folders, problems
+    """
+    import shutil
+    log, out, o = ctx["log"], ctx["out"], ctx["o"]
+    part = ctx.get("part") or f"report={o.report_id or 'unknown'}/{(o.upc or 'unknown').replace('/', '-')}"
+    dest = out / "logs" / part / f"run={ctx['stamp']}"
+    dest.mkdir(parents=True, exist_ok=True)
+    copied = []
+
+    def take(src, name):
+        if src and Path(src).is_file():
+            shutil.copy2(src, dest / name)
+            copied.append(name)
+
+    for d in ("d1", "d2", "d3", "d4"):
+        run = _latest_run(ctx["bronze_dir"] / d) if ctx.get("bronze_dir") else None
+        if run and (not ctx.get("batch") or run.name >= f"run={ctx['stamp']}"):   # bronze ran now: its new runs only
+            take(run / f"{d}_run.log", f"bronze_{d}_run.log")
+            take(run / f"{d}_manifest.json", f"bronze_{d}_manifest.json")
+    batch = ctx.get("batch")
+    if batch:
+        b = out / "bronze" / "nsv" / "_batches" / f"batch={batch['batch_id']}"
+        take(f"{b}_report.csv", "bronze_report.csv")
+        take(f"{b}.json", "bronze_batch.json")
+    if ctx.get("silver_dir"):
+        sd = ctx["silver_dir"]
+        take(sd / "run.log", "silver_run.log")
+        for f in ("dq_summary.csv", "dq_mismatches.csv", "rule_checks.csv"):
+            take(sd / "dq" / f, f"silver_{f}")
+    if ctx.get("gold_dir"):
+        take(ctx["gold_dir"] / "gold_run.log", "gold_run.log")
+    if o.report_id:
+        take(out / "metadata" / f"{o.report_id}.json", "metadata.json")
+    summary = {"exit_code": code, "survey_id": o.report_id, "upc": o.upc, "part": part, "run": ctx["stamp"],
+               "run_date": o.run_date, "folders": {k: str(ctx[k]) for k in ("bronze_dir", "silver_dir", "gold_dir") if ctx.get(k)},
+               "files": copied}
+    (dest / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    log(f"all logs of this run: {dest}")
+    if o.output_s3:
+        s3_dest = f"{o.output_s3.rstrip('/')}/logs/{part}/run={ctx['stamp']}"
+        log(f"  -> {s3_dest}")
+    log.file.flush()
+    shutil.copy2(log.path, dest / "pipeline.log")                 # last: complete
+    if o.output_s3:
+        upload(lambda *_: None, dest, s3_dest)
+
+
+def newest_bronze_batch(out, since=""):
+    """The bronze batch summary written by THIS run (batch id >= the run's start), else None."""
+    batches = sorted(b for b in (out / "bronze" / "nsv" / "_batches").glob("batch=*.json")
+                     if b.stem[len("batch="):] >= since)
     return json.loads(batches[-1].read_text(encoding="utf-8")) if batches else None
 
 
 def main(args):
+    """Run the layers, then ALWAYS gather every log of the run into one folder (also after a failure)."""
+    ctx = {}
+    code = 1
+    try:
+        code = _run(args, ctx)
+        return code
+    finally:
+        if ctx.get("log"):
+            try:
+                collect_logs(ctx, code)
+            except Exception as e:
+                print(f"log collection failed: {type(e).__name__}: {e}")
+
+
+def _run(args, ctx):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # layer logs print '→', '✖' (Windows console)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", nargs="?", help="report id, s3:// report folder or local folder (not needed with --from silver)")
@@ -159,6 +239,7 @@ def main(args):
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     upc = o.upc.strip().replace("/", "-").replace("_", "-").upper() if o.upc else None
     log = Log(out / "logs" / f"pipeline_{stamp}_{upc or 'upc'}.log")
+    ctx.update(log=log, out=out, o=o, stamp=stamp)
     log(f"NSV pipeline: {o.source or '(bronze not run)'}  "
         + (f"zone {o.zone} phase {o.phase} cycle {o.cycle}  " if zpc else f"report {o.report_id or '(from source)'}  ")
         + f"UPC {upc or '(from bronze / data)'}  layers {layers}  output {out}")
@@ -208,7 +289,8 @@ def main(args):
         if o.upc:
             cmd += ["--upc", o.upc]
         rc = run(log, "BRONZE (schema check + extraction)", cmd, BRONZE, env={"NSV_OUTPUT": str(out)})
-        batch = newest_bronze_batch(out)
+        batch = newest_bronze_batch(out, since=stamp)
+        ctx["batch"] = batch
         if rc == 1 or not batch:
             log("BRONZE could not run - stopped")
             return 1
@@ -226,6 +308,7 @@ def main(args):
     # silver + gold: one folder per run date (a later run of the same survey never overwrites an earlier one)
     dated = f"{part}/run_date={o.run_date}"
     bronze_dir, silver_dir, gold_dir = out / "bronze" / "nsv" / part, out / "silver" / dated, out / "gold" / dated
+    ctx.update(part=part, bronze_dir=bronze_dir, silver_dir=silver_dir, gold_dir=gold_dir)
 
     # ---------------------------------------------------------------- silver
     if "silver" in layers:
@@ -285,17 +368,6 @@ def main(args):
             log(f"  {layer:6} {local}")
     for p in problems:
         log(f"  PROBLEM  {p}")
-    if o.output_s3:                                     # last: the log is complete now
-        root = o.output_s3.rstrip("/")
-        try:
-            meta = out / "metadata" / f"{o.report_id}.json" if o.report_id else None
-            if meta and meta.is_file():
-                upload_file(meta, f"{root}/metadata/{meta.name}")
-            log(f"  log -> {root}/logs/{log.path.name}")
-            log.file.flush()
-            upload_file(log.path, f"{root}/logs/{log.path.name}")
-        except Exception as e:
-            log(f"  log / metadata upload failed: {type(e).__name__}: {e}")
     return 2 if problems else 0
 
 
