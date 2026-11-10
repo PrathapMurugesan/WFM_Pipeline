@@ -34,7 +34,12 @@ python run_pipeline.py --from silver --report-id <id> --upc N/02001/19004/DL    
 - **Filing.** WFM reports are stored per **report id**, not per zone / phase / cycle, so the output is filed by report:
   `report=<report id>/<UPC>`. In the silver and gold tables, zone / phase / cycle are `NA` / `0` / `0`.
   Give `--zone --phase --cycle` to file the output as before and to fill those columns.
-- **UPC.** Found in the data (the UPC columns of D1 / D4). When the data holds more than one UPC, give `--upc`.
+- **Survey details from Postgres.** The S3 folder name is the survey id (`wfm_survey_schedule.id`). When `--zone/--phase/--cycle/--upc`
+  are not given, `run_pipeline.py` looks them up in `wfm_survey_schedule` (+ the linked `wfm_report` rows) with `wfm_metadata.py`
+  and then files the output by zone / phase / cycle as before. To see the rows and what was found: `python wfm_metadata.py <survey id>`.
+  Credentials: `postgres_creds.txt` (in this folder or `silver/`, **never committed**, see `.gitignore`) or the environment variables
+  `DB_HOST DB_PORT DB_USER DB_PASSWORD DB_SCHEMA TARGET_DBS`. The database is reachable only inside the VPC, so run this on the EC2 instance.
+- **UPC.** From Postgres, else found in the data (the UPC columns of D1 / D4). When the data holds more than one UPC, give `--upc`.
 - **S3 credentials.** The normal AWS chain (environment variables, `~/.aws`, or the EC2 instance's IAM role). They are never stored in the code.
   Reading the reports needs `s3:ListBucket` + `s3:GetObject` on `nhai-dhms-uat/wfm_reports/*`.
 

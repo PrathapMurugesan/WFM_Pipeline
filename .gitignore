@@ -25,3 +25,9 @@ venv/
 .DS_Store
 Thumbs.db
 .claude/
+
+# --- Credentials (never in git) ---
+*creds*.txt
+*creds*.json
+*.pem
+.env.local

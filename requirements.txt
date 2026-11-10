@@ -10,3 +10,4 @@ shapely>=2.0         # bronze D3: geometry -> WKT
 Pillow>=9.0          # bronze D4 images
 pytesseract>=0.3     # bronze D4 image text - also needs the tesseract program
 boto3>=1.28          # S3: WFM reports in, --output-s3 out
+psycopg2-binary>=2.9  # zone / phase / cycle / UPC from the WFM Postgres (wfm_metadata.py)

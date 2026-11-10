@@ -7,6 +7,9 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
     python run_pipeline.py "<local copy of a report>" --report-id <id>
     options:
       --zone A --phase 2 --cycle 2           optional: file the output by zone/phase/cycle (earlier layout)
+                                             not given -> looked up in Postgres (wfm_survey_schedule.id = report id,
+                                             + wfm_report; see wfm_metadata.py); found -> the zone/phase/cycle layout
+      --no-db                                do not look up zone / phase / cycle / UPC in Postgres
       --project-master <xlsx|csv|s3://...>   gold ris_view needs it (without: ris_trends + intermediate only)
       --tracker <xlsx|s3://...>              NSV Activity Tracker for silver (optional)
       --output <folder>                      local output root (default ./output)
@@ -28,6 +31,7 @@ Exit code: 0 = all layers ok, 1 = a layer failed, 2 = finished with problems (br
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -36,6 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 BRONZE, SILVER, GOLD = ROOT / "bronze", ROOT / "silver", ROOT / "gold"
 LAYERS = ["bronze", "silver", "gold"]
+REPORT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 # silver writes nothing for an empty table, and gold stops on a missing file -> checked before gold
 GOLD_TABLES = ["master_chainage", "master_reporting_interval", "dlm_threshold_mapping",
                "master_roughness_parent", "master_roughness_child_100m", "master_roughness_child_10m",
@@ -124,6 +129,7 @@ def main(args):
     ap.add_argument("--from", dest="start", choices=LAYERS, default="bronze")
     ap.add_argument("--only", choices=LAYERS)
     ap.add_argument("--strict", action="store_true")
+    ap.add_argument("--no-db", action="store_true", help="do not look up zone/phase/cycle/UPC in Postgres")
     o = ap.parse_args(args)
     layers = [o.only] if o.only else LAYERS[LAYERS.index(o.start):]
     if "bronze" in layers and not o.source:
@@ -131,8 +137,8 @@ def main(args):
     zpc = [x for x in (o.zone, o.phase, o.cycle) if x]
     if zpc and len(zpc) != 3:
         ap.error("--zone, --phase and --cycle go together (or leave all three out)")
-    if "bronze" not in layers and not (o.upc and (o.report_id or zpc)):
-        ap.error("without bronze: give --upc and --report-id (or --zone/--phase/--cycle)")
+    if "bronze" not in layers and not (o.report_id or (o.upc and zpc)):
+        ap.error("without bronze: give --report-id (or --upc with --zone/--phase/--cycle)")
 
     out = Path(o.output).resolve()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -143,6 +149,35 @@ def main(args):
         + f"UPC {upc or '(from bronze / data)'}  layers {layers}  output {out}")
     work = out / "_work"
     problems = []
+
+    # ---------------------------------------------------------------- survey details from Postgres
+    survey_id = o.report_id or (Path(str(o.source).rstrip("/")).name if o.source else None)
+    if not o.no_db and survey_id and REPORT_ID.match(survey_id) and not (zpc and o.upc):
+        try:
+            import wfm_metadata
+            meta = wfm_metadata.lookup(survey_id)
+            found, where = meta["found"], meta["found_in"]
+            log(f"POSTGRES: {len(meta['schedule'])} wfm_survey_schedule row(s), {len(meta['reports'])} wfm_report row(s) "
+                f"for {survey_id}; found {found}")
+            for field, path in where.items():
+                log(f"  {field:6} <- {path}")
+            if not zpc and all(found.get(k) for k in ("zone", "phase", "cycle")):
+                o.zone, o.phase, o.cycle = found["zone"], found["phase"], found["cycle"]
+                zpc = [o.zone, o.phase, o.cycle]
+            elif not zpc:
+                log("  zone / phase / cycle not all found - output filed by report id")
+            if not o.upc and found.get("upc"):
+                o.upc = found["upc"]
+                upc = o.upc.replace("/", "-").upper()
+            o.report_id = o.report_id or survey_id
+            meta_file = out / "metadata" / f"{survey_id}.json"
+            meta_file.parent.mkdir(parents=True, exist_ok=True)
+            meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        except Exception as e:
+            log(f"POSTGRES lookup not used ({type(e).__name__}: {e}) - continuing with what was given")
+    if "bronze" not in layers and not upc:
+        log("no UPC (give --upc, or let the Postgres lookup find it) - stopped")
+        return 1
 
     # ---------------------------------------------------------------- bronze
     if "bronze" in layers:
