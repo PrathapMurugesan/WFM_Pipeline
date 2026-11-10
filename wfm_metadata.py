@@ -62,7 +62,8 @@ def load_creds():
 
 
 def databases(creds):
-    return [d for d in re.split(r"[,;\s]+", creds.get("TARGET_DBS", "")) if d] or ["postgres"]
+    """TARGET_DBS: 'dhms_staging', 'a, b' or a list '["dhms_staging"]' -> ['dhms_staging']"""
+    return re.findall(r"[A-Za-z0-9_][A-Za-z0-9_$\-]*", creds.get("TARGET_DBS", "")) or ["postgres"]
 
 
 def connect(creds, dbname):
