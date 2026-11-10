@@ -1,11 +1,15 @@
 """
 main.py - check and ingest ONE uploaded report (one UPC) into bronze, against schema/nsv_schema.json.
 
-    python main.py 57d89b35-0ceb-4bcc-b35a-fb947c0f8268 --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL
-              = s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/57d89b35-.../   (settings.REPORTS_S3_ROOT)
-    python main.py s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/57d89b35-.../ --zone A --phase 2 --cycle 2
-    python main.py "<local folder>" --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL
+    python main.py 3433cb89-f583-438c-ab44-6e99455e1bf4                     a WFM report id (UPC found in the data)
+              = s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/3433cb89-.../   (settings.REPORTS_S3_ROOT)
+    python main.py 3433cb89-f583-438c-ab44-6e99455e1bf4 --upc N/02001/19004/DL   the UPC, when the data has several
+    python main.py s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/3433cb89-.../
+    python main.py "<local folder>" --report-id <id>                        a local copy
+    ... --zone A --phase 2 --cycle 2                                       optional: the earlier zone/phase/cycle layout
     ... d2 d4                                                                     only these deliverables
+
+Output: bronze/nsv/report=<report id>/<UPC>/d1..d4/run=<time>/  (zone/phase/cycle given: bronze/nsv/zone=/phase=/cycle=/<UPC>/)
 
 The report holds the deliverable folders D1..D4 (or 'Deliverable 1 - RAMS Data' ...), directly or one level down.
 File names may carry the upload timestamp ('1793260589326-LRMS_DataTemplate.xlsx'): it is removed before any
@@ -46,11 +50,15 @@ def parse_args(args):
                                      formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     parser.add_argument("source", help="report id, s3:// report folder, or local folder")
     parser.add_argument("deliverables", nargs="*", help="d1 d2 d3 d4 (default: all)")
-    parser.add_argument("--zone", required=True)
-    parser.add_argument("--phase", required=True)
-    parser.add_argument("--cycle", required=True)
+    parser.add_argument("--report-id", help="report id for a local folder whose name is not the report id")
+    parser.add_argument("--zone", help="optional (with --phase and --cycle): the earlier zone/phase/cycle layout")
+    parser.add_argument("--phase")
+    parser.add_argument("--cycle")
     parser.add_argument("--upc", help="e.g. N/02001/19004/DL (default: folder name, else the UPC in the data)")
     o = parser.parse_args(args)
+    given = [x for x in (o.zone, o.phase, o.cycle) if x]
+    if given and len(given) != 3:
+        parser.error("--zone, --phase and --cycle go together (or leave all three out)")
     unknown = [d for d in o.deliverables if d not in schema.deliverable_keys()]
     if unknown:
         parser.error(f"unknown deliverable(s) {unknown}, choose from {schema.deliverable_keys()}")
@@ -135,6 +143,10 @@ def _upc_rows(survey, manifests, base):
 def main(args):
     o = parse_args(args)
     location, report_id = resolve_source(o.source)
+    report_id = o.report_id or report_id
+    if not report_id and not o.zone:
+        logger.error("no report id: give a WFM report id / its s3:// folder, or --report-id for a local folder")
+        return 1
     if not location.startswith("s3://") and not Path(location).is_dir():
         logger.error(f"not a report id, s3:// folder or local folder: {o.source}")
         return 1
@@ -162,7 +174,8 @@ def main(args):
         return 1
     settings.UPLOAD = {"report_id": report_id, "source": upload.describe(),
                        "deliverable_folders": dict(upload.folders), "superseded_uploads": len(upload.superseded)}
-    survey = Survey(o.zone.upper(), str(o.phase), str(o.cycle), upc)
+    survey = Survey(upc, report_id=report_id, zone=o.zone.upper() if o.zone else None,
+                    phase=str(o.phase) if o.phase else None, cycle=str(o.cycle) if o.cycle else None)
     wanted = o.deliverables or schema.deliverable_keys()
     logger.info(f"upload {upload.describe()} (report {report_id or '-'}) -> {survey.label}; "
                 f"deliverable folders: {upload.folders}")
@@ -192,8 +205,8 @@ def main(args):
             report += report_rows(survey, name, "crashed", error=str(e))
 
     # ---- the upload as a whole: files outside the deliverable folders, UPC in the data ----
-    base = {c: "" for c in COLUMNS} | {"zone": survey.zone, "phase": survey.phase, "cycle": survey.cycle,
-                                      "upc": survey.upc}
+    base = {c: "" for c in COLUMNS} | {"report_id": survey.report_id or "", "zone": survey.zone or "",
+                                      "phase": survey.phase or "", "cycle": survey.cycle or "", "upc": survey.upc}
     report += _root_rows(survey, upload, base) + _upc_rows(survey, manifests, base)
 
     # ---- batch summary + report ----

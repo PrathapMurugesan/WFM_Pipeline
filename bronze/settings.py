@@ -18,8 +18,9 @@ UPLOAD = {}                 # report id / source of the run (main.py) -> every m
 # Output: bronze, default ./data  (or NSV_OUTPUT=<folder>)
 OUTPUT = LocalStorage(Path(os.environ.get("NSV_OUTPUT") or PROJECT_ROOT / "data"))
 
-# bronze/nsv/zone=A/phase=2/cycle=2/N-02001-19004-DL/d2/run=20261106_101500/   (same layout silver reads)
-BRONZE_LAYOUT = "bronze/nsv/zone={zone}/phase={phase}/cycle={cycle}/{upc}/{deliverable}"
+# bronze/nsv/report=<report id>/<UPC>/d2/run=20261110_101500/        (WFM reports: stored per report)
+# bronze/nsv/zone=A/phase=2/cycle=2/<UPC>/d2/run=.../                 (when --zone/--phase/--cycle are given)
+BRONZE_ROOT = "bronze/nsv"
 RUN_FOLDER = "run={run_id}"
 BATCH_FOLDER = "bronze/nsv/_batches"
 

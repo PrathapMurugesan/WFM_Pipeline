@@ -459,13 +459,21 @@ class Project:
         self.run_date = datetime.today().date()
         self.run_ts = pd.Timestamp(self.run_date)
         self.now_ts = pd.Timestamp.now()
-        self.out_dir = os.path.join(self.output_root, f"zone={self.zone}", f"phase={self.phase}",
-                                    f"cycle={self.cycle}", self.upc_folder)
+        # WFM reports are stored per report, not per zone/phase/cycle: bronze/nsv/report=<id>/<UPC>/ ->
+        # silver/report=<id>/<UPC>/ (zone NA, phase 0, cycle 0 in the tables unless the path gives them)
+        report = re.findall(r'report=([^/]+)', p)
+        self.report_id = report[-1] if report else None
+        if self.report_id and 'zone=' not in p:
+            self.part = f"report={self.report_id}/{self.upc_folder}"
+        else:
+            self.part = f"zone={self.zone}/phase={self.phase}/cycle={self.cycle}/{self.upc_folder}"
+        self.out_dir = os.path.join(self.output_root, *self.part.split('/'))
         self.d_dirs = {k: self._latest_run(os.path.join(self.project_dir, k)) for k in ['d1', 'd2', 'd4']}   # D3 is not used
         self.sources_used = {}          # label → file actually used (printed + written to the run log)
 
     def describe(self):
-        print(f"UPC {self.upc} | Zone={self.zone} Phase={self.phase} Cycle={self.cycle}")
+        print(f"UPC {self.upc} | Zone={self.zone} Phase={self.phase} Cycle={self.cycle}"
+              + (f" | report {self.report_id}" if self.report_id else ""))
         for k, v in self.d_dirs.items():
             print(f"  {k}: {v or 'MISSING'}")
         print(f"  output: {self.out_dir}")

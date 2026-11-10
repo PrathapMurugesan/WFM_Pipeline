@@ -1,20 +1,23 @@
 """
 run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze -> silver -> gold.
 
-    python run_pipeline.py 57d89b35-0ceb-4bcc-b35a-fb947c0f8268 --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL
-    python run_pipeline.py s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/57d89b35-.../ --zone A --phase 2 --cycle 2
-    python run_pipeline.py "<local copy of a report>" --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL
+    python run_pipeline.py 3433cb89-f583-438c-ab44-6e99455e1bf4                 WFM report id (UPC found in the data)
+    python run_pipeline.py 3433cb89-f583-438c-ab44-6e99455e1bf4 --upc N/02001/19004/DL   when the data has several UPCs
+    python run_pipeline.py s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/3433cb89-.../
+    python run_pipeline.py "<local copy of a report>" --report-id <id>
     options:
+      --zone A --phase 2 --cycle 2           optional: file the output by zone/phase/cycle (earlier layout)
       --project-master <xlsx|csv|s3://...>   gold ris_view needs it (without: ris_trends + intermediate only)
       --tracker <xlsx|s3://...>              NSV Activity Tracker for silver (optional)
       --output <folder>                      local output root (default ./output)
       --output-s3 s3://bucket/prefix         also upload every layer there (same layout)
-      --from silver | --only gold            start at / run only one layer (bronze already in --output)
+      --from silver | --only gold            start at / run only one layer (bronze already in --output;
+                                             give --report-id + --upc, or --zone/--phase/--cycle + --upc)
       --strict                               stop when bronze has problems or a silver DQ check fails
 
 Input: settings.REPORTS_S3_ROOT of the bronze module (s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/)
        <report id>/D1..D4/<upload timestamp>-<file name>
-Output (the layout of the earlier NSV pipeline; <part> = zone=A/phase=2/cycle=2/<UPC>):
+Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when those are given):
     <output>/bronze/nsv/<part>/d1..d4/run=<time>/     bronze   (schema check + extraction)
     <output>/silver/<part>/dlm_kpi/ dlm_postgres/ dq/ run.log                silver
     <output>/gold/<part>/ris_trends_dw.csv final_intermediate.csv ris_view_dw.csv gold_run.log   gold
@@ -109,9 +112,10 @@ def main(args):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")    # layer logs print '→', '✖' (Windows console)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", nargs="?", help="report id, s3:// report folder or local folder (not needed with --from silver)")
-    ap.add_argument("--zone", required=True)
-    ap.add_argument("--phase", required=True)
-    ap.add_argument("--cycle", required=True)
+    ap.add_argument("--report-id", help="report id (local folder not named by it / --from silver)")
+    ap.add_argument("--zone", help="optional, with --phase and --cycle")
+    ap.add_argument("--phase")
+    ap.add_argument("--cycle")
     ap.add_argument("--upc", help="N/02001/19004/DL (default: found by bronze in the folder name / the data)")
     ap.add_argument("--project-master")
     ap.add_argument("--tracker")
@@ -124,21 +128,29 @@ def main(args):
     layers = [o.only] if o.only else LAYERS[LAYERS.index(o.start):]
     if "bronze" in layers and not o.source:
         ap.error("the report (id / s3:// / folder) is needed to run bronze")
-    if "bronze" not in layers and not o.upc:
-        ap.error("--upc is needed when bronze is not run")
+    zpc = [x for x in (o.zone, o.phase, o.cycle) if x]
+    if zpc and len(zpc) != 3:
+        ap.error("--zone, --phase and --cycle go together (or leave all three out)")
+    if "bronze" not in layers and not (o.upc and (o.report_id or zpc)):
+        ap.error("without bronze: give --upc and --report-id (or --zone/--phase/--cycle)")
 
     out = Path(o.output).resolve()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     upc = o.upc.strip().replace("/", "-").replace("_", "-").upper() if o.upc else None
     log = Log(out / "logs" / f"pipeline_{stamp}_{upc or 'upc'}.log")
-    log(f"NSV pipeline: {o.source or '(bronze not run)'}  zone {o.zone} phase {o.phase} cycle {o.cycle}  "
-        f"UPC {upc or '(from bronze)'}  layers {layers}  output {out}")
+    log(f"NSV pipeline: {o.source or '(bronze not run)'}  "
+        + (f"zone {o.zone} phase {o.phase} cycle {o.cycle}  " if zpc else f"report {o.report_id or '(from source)'}  ")
+        + f"UPC {upc or '(from bronze / data)'}  layers {layers}  output {out}")
     work = out / "_work"
     problems = []
 
     # ---------------------------------------------------------------- bronze
     if "bronze" in layers:
-        cmd = [sys.executable, "main.py", o.source, "--zone", o.zone, "--phase", o.phase, "--cycle", o.cycle]
+        cmd = [sys.executable, "main.py", o.source]
+        if zpc:
+            cmd += ["--zone", o.zone, "--phase", o.phase, "--cycle", o.cycle]
+        if o.report_id:
+            cmd += ["--report-id", o.report_id]
         if o.upc:
             cmd += ["--upc", o.upc]
         rc = run(log, "BRONZE (schema check + extraction)", cmd, BRONZE, env={"NSV_OUTPUT": str(out)})
@@ -147,13 +159,16 @@ def main(args):
             log("BRONZE could not run - stopped")
             return 1
         upc = batch["survey"]["upc_folder"]
+        part = batch["survey"]["part"]
         if rc == 2:
             problems.append(f"bronze: {batch['problems']} problem(s) - see bronze/nsv/_batches/batch={batch['batch_id']}_report.csv")
             log(f"  BRONZE: upload NOT accepted ({batch['problems']} problem(s))")
             if o.strict:
                 return 2
 
-    part = f"zone={o.zone.upper()}/phase={o.phase}/cycle={o.cycle}/{upc}"
+    if "bronze" not in layers:
+        part = (f"zone={o.zone.upper()}/phase={o.phase}/cycle={o.cycle}/{upc}" if zpc
+                else f"report={o.report_id}/{upc}")
     bronze_dir, silver_dir, gold_dir = out / "bronze" / "nsv" / part, out / "silver" / part, out / "gold" / part
 
     # ---------------------------------------------------------------- silver

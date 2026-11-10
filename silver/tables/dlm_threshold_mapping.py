@@ -152,7 +152,7 @@ def _pavement(prj):
 def _deliverable_path(prj):
     root = getattr(config, 'BRONZE_S3_ROOT', None)
     if root:
-        return f"{root.rstrip('/')}/zone={prj.zone}/phase={prj.phase}/cycle={prj.cycle}/{os.path.basename(prj.project_dir.rstrip('/'))}"
+        return f"{root.rstrip('/')}/{prj.part}"
     return prj.project_dir
 
 

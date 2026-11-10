@@ -39,7 +39,7 @@ from nsv.headers import split_unit
 PROBLEMS = {"REJECTED_HEADERS", "SHEET_MISSING", "WORKBOOK_MISSING", "READ_ERROR", "CRASHED", "IMAGES_MISSING",
             "DOCUMENT_MISSING", "FOLDER_MISSING", "GIS_MISSING", "GIS_REJECTED", "GIS_PARTS_MISSING",
             "GIS_READ_ERROR", "TEMPLATE_PROBLEM", "NOT_IN_SCHEMA", "DELIVERABLE_MISSING", "UPC_MISMATCH"}
-COLUMNS = ["zone", "phase", "cycle", "upc", "deliverable", "workbook", "file", "sheet", "interval_m", "period",
+COLUMNS = ["report_id", "zone", "phase", "cycle", "upc", "deliverable", "workbook", "file", "sheet", "interval_m", "period",
            "status", "rows", "reason", "notes", "run_folder"]   # interval_m / period: read from the sheet name
 
 _STATUS = {"rejected_headers": "REJECTED_HEADERS", "missing": "SHEET_MISSING", "read_error": "READ_ERROR"}
@@ -73,7 +73,8 @@ def _notes(result):
 
 def report_rows(survey, deliverable, status, manifest=None, error=None):
     """All report rows for one survey x deliverable."""
-    base = {"zone": survey.zone, "phase": survey.phase, "cycle": survey.cycle, "upc": survey.upc,
+    base = {"report_id": survey.report_id or "", "zone": survey.zone or "", "phase": survey.phase or "",
+            "cycle": survey.cycle or "", "upc": survey.upc,
             "deliverable": deliverable, "workbook": "", "file": "", "sheet": "", "rows": "", "reason": "",
             "notes": "", "run_folder": (manifest or {}).get("output", "")}
     if status == "not_delivered":

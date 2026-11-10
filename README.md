@@ -19,27 +19,30 @@ s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<report id>/D1/1793260589326-
 - A file uploaded twice is read from its **newest** upload only. The older copy is listed as `superseded_upload`.
 - The root is `REPORTS_S3_ROOT` in [`bronze/settings.py`](bronze/settings.py), or the environment variable `NSV_REPORTS_S3_ROOT`.
 
-## Run
+## Run (one report)
 ```bash
 pip install -r requirements.txt
-python run_pipeline.py 57d89b35-0ceb-4bcc-b35a-fb947c0f8268 --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL \
-       --project-master s3://.../project_master.xlsx            # optional: gold ris_view needs it
-python run_pipeline.py s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<report id>/ --zone A --phase 2 --cycle 2
-python run_pipeline.py "<local copy of a report>" --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL
-python run_pipeline.py --from silver --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL   # bronze already done
-python run_pipeline.py ... --output-s3 s3://<bucket>/NSV_Pipeline                         # also upload every layer
+python run_pipeline.py 3433cb89-f583-438c-ab44-6e99455e1bf4                          # the WFM report id
+python run_pipeline.py 3433cb89-f583-438c-ab44-6e99455e1bf4 --upc N/02001/19004/DL   # if the data has several UPCs
+python run_pipeline.py s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<report id>/
+python run_pipeline.py "<local copy of a report>" --report-id <id>
+python run_pipeline.py --from silver --report-id <id> --upc N/02001/19004/DL         # bronze already done
+  options:  --project-master <xlsx|s3://>   gold ris_view (without it: ris_trends + intermediate only)
+            --output-s3 s3://<bucket>/<prefix>   also upload every layer there
+            --zone A --phase 2 --cycle 2     optional: file the output by zone/phase/cycle (earlier layout)
 ```
-- **UPC:** `--upc`. Without it, bronze takes the UPC from the folder name, or else the single UPC found in the data's UPC columns.
-  The report id is not a UPC.
-- **Zone / phase / cycle:** always given, because nothing in the upload states them.
-- **S3 credentials:** the normal AWS chain (environment variables, `~/.aws`, or the EC2 instance's IAM role). They are never stored in the code.
+- **Filing.** WFM reports are stored per **report id**, not per zone / phase / cycle, so the output is filed by report:
+  `report=<report id>/<UPC>`. In the silver and gold tables, zone / phase / cycle are `NA` / `0` / `0`.
+  Give `--zone --phase --cycle` to file the output as before and to fill those columns.
+- **UPC.** Found in the data (the UPC columns of D1 / D4). When the data holds more than one UPC, give `--upc`.
+- **S3 credentials.** The normal AWS chain (environment variables, `~/.aws`, or the EC2 instance's IAM role). They are never stored in the code.
   Reading the reports needs `s3:ListBucket` + `s3:GetObject` on `nhai-dhms-uat/wfm_reports/*`.
 
 ## Output (`./output`, or `--output`)
 ```
-output/bronze/nsv/zone=A/phase=2/cycle=2/<UPC>/d1..d4/run=<time>/   + bronze/nsv/_batches/batch=<time>_report.csv
-output/silver/zone=A/phase=2/cycle=2/<UPC>/dlm_kpi/ dlm_postgres/ dq/ run.log
-output/gold/zone=A/phase=2/cycle=2/<UPC>/ris_trends_dw.csv final_intermediate.csv [ris_view_dw.csv] gold_run.log
+output/bronze/nsv/report=<id>/<UPC>/d1..d4/run=<time>/   + bronze/nsv/_batches/batch=<time>_report.csv
+output/silver/report=<id>/<UPC>/dlm_kpi/ dlm_postgres/ dq/ run.log
+output/gold/report=<id>/<UPC>/ris_trends_dw.csv final_intermediate.csv [ris_view_dw.csv] gold_run.log
 output/logs/pipeline_<time>_<UPC>.log
 ```
 | Exit code | Meaning |
@@ -55,5 +58,6 @@ output/logs/pipeline_<time>_<UPC>.log
 - **Silver** (`silver/common/project.py`): the D2 Detailed template has two CA sheets (Flexible + Rigid). Both are read and
   stacked with a `pavement_sheet` column. The earlier code read only the first. If both D2 templates were delivered, silver uses one
   (Detailed) for the tables *and* the thresholds.
+- **Silver** also files reports as `report=<id>/<UPC>` (zone / phase / cycle `NA` / `0` / `0` when not given).
 - **Gold:** unchanged.
 - The EC2 shell wrappers (`run_*_s3.sh`) are replaced by `run_pipeline.py`.

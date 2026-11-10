@@ -9,9 +9,9 @@ What the schema describes is extracted into bronze. Everything else is reported 
 Normally through [`../run_pipeline.py`](../run_pipeline.py), which runs bronze, then silver, then gold. To run bronze on its own:
 ```bash
 pip install -r requirements.txt     # + boto3 for S3
-python main.py 57d89b35-0ceb-4bcc-b35a-fb947c0f8268 --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL   # WFM report id
-python main.py s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<report id>/ --zone A --phase 2 --cycle 2
-python main.py "<local folder>" --zone A --phase 2 --cycle 2 --upc N/02001/19004/DL
+python main.py 3433cb89-f583-438c-ab44-6e99455e1bf4                  # WFM report id (UPC from the data)
+python main.py 3433cb89-f583-438c-ab44-6e99455e1bf4 --upc N/02001/19004/DL   # several UPCs in the data
+python main.py "<local folder>" --report-id <id>          # a local copy; add --zone A --phase 2 --cycle 2 for the earlier layout
 ```
 - **Input layout.** A report holds `D1`..`D4` (or `Deliverable 1 - RAMS Data` …) folders. File names may start with the upload timestamp
   (`1793260589326-LRMS_DataTemplate.xlsx`). That prefix is removed before matching, and kept in the inventory as `uploaded_name` / `uploaded_at`.
@@ -21,7 +21,7 @@ python main.py "<local folder>" --zone A --phase 2 --cycle 2 --upc N/02001/19004
 
 ## Output (default `./data`, or `NSV_OUTPUT=<folder>`)
 ```
-bronze/nsv/zone=A/phase=2/cycle=2/<UPC>/d1..d4/run=<timestamp>/
+bronze/nsv/report=<report id>/<UPC>/d1..d4/run=<timestamp>/   (with --zone/--phase/--cycle: zone=A/phase=2/cycle=2/<UPC>)
     <dN>_<workbook>_<sheet>.parquet + .csv       every value as text, exactly as delivered, + source_row
     d3_<ca|irc>_shp_<layer>, d3_<std>_gpkg_<file>_<layer>    GIS attributes + geometry_wkt
     d4_images_<crack|pothole>_images             one row per image (EXIF, OCR, lane)
