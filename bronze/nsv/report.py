@@ -38,7 +38,8 @@ from nsv.headers import split_unit
 
 PROBLEMS = {"REJECTED_HEADERS", "SHEET_MISSING", "WORKBOOK_MISSING", "READ_ERROR", "CRASHED", "IMAGES_MISSING",
             "DOCUMENT_MISSING", "FOLDER_MISSING", "GIS_MISSING", "GIS_REJECTED", "GIS_PARTS_MISSING",
-            "GIS_READ_ERROR", "TEMPLATE_PROBLEM", "NOT_IN_SCHEMA", "DELIVERABLE_MISSING", "UPC_MISMATCH"}
+            "GIS_READ_ERROR", "TEMPLATE_PROBLEM", "NOT_IN_SCHEMA", "DELIVERABLE_MISSING", "UPC_MISMATCH",
+            "ZIP_DAMAGED"}
 COLUMNS = ["report_id", "zone", "phase", "cycle", "upc", "deliverable", "workbook", "file", "sheet", "interval_m", "period",
            "status", "rows", "reason", "notes", "run_folder"]   # interval_m / period: read from the sheet name
 

@@ -23,11 +23,15 @@ Common methods: list_files(folder), read_bytes(path), size(path), full_path(path
 Paths are relative, with forward slashes.
 """
 import atexit
+import mmap
 import re
 import shutil
+import struct
+import subprocess
 import sys
 import tempfile
 import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -182,12 +186,98 @@ class ReportStorage:
             except zipfile.BadZipFile as e:
                 # Some zip tools write archives whose entries overlap; newer Pythons refuse them as a possible
                 # 'zip bomb'. The size is checked when the zip is opened, so read the entry without that check.
-                if "Overlapped" not in str(e) or not hasattr(info, "_end_offset"):
-                    raise
-                info._end_offset = None
-                self.zip_warnings = getattr(self, "zip_warnings", 0) + 1
-                return self._open_zips[raw].read(info)
+                if "Overlapped" in str(e) and hasattr(info, "_end_offset"):
+                    info._end_offset = None
+                    try:
+                        return self._open_zips[raw].read(info)
+                    except Exception as e2:
+                        return self._recover(raw, info, e2)
+                return self._recover(raw, info, e)
+            except Exception as e:                                # zlib.error, CRC error ...
+                return self._recover(raw, info, e)
         return self._read_raw(entry)
+
+    # ---- damaged zip index: recover an entry from its own local header (checked by CRC) ----
+    def _recover(self, raw, info, error):
+        """
+        The zip's index (central directory) can point to the wrong place - seen in WFM uploads: 'overlapped
+        entries', then 'invalid stored block lengths' / 'Bad CRC-32'. Each entry also has its own local header
+        right in front of its data, so:
+          1. scan the zip for the local headers of this entry's name, decompress, accept only if the CRC matches
+          2. the system's 7z / unzip (more tolerant), extracted once to a temp folder
+        Nothing matches the CRC -> the original error (the entry is listed as unreadable).
+        """
+        data = self._from_local_headers(raw, info)
+        if data is not None:
+            self.zip_recovered = getattr(self, "zip_recovered", 0) + 1
+            return data
+        data = self._from_system_unzip(raw, info)
+        if data is not None:
+            self.zip_recovered = getattr(self, "zip_recovered", 0) + 1
+            return data
+        self.zip_unreadable = getattr(self, "zip_unreadable", 0) + 1
+        raise error
+
+    def _local_index(self, raw):
+        """{entry name: [(data offset, method, compressed size from the local header, flags)]} of a zip file."""
+        cache = self.__dict__.setdefault("_local_cache", {})
+        if raw in cache:
+            return cache[raw]
+        index = {}
+        with open(self._zip_file(raw), "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+            pos = m.find(b"PK\x03\x04")
+            while pos != -1 and pos + 30 <= len(m):
+                (_, _, flags, method, _, _, _, csize, _, nlen, xlen) = struct.unpack("<4sHHHHHIIIHH", m[pos:pos + 30])
+                name = bytes(m[pos + 30:pos + 30 + nlen])
+                for enc in ("utf-8", "cp437"):
+                    try:
+                        text = name.decode(enc)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                index.setdefault(text, []).append((pos + 30 + nlen + xlen, method, csize, flags))
+                pos = m.find(b"PK\x03\x04", pos + 4)
+        cache[raw] = index
+        return index
+
+    def _from_local_headers(self, raw, info):
+        try:
+            candidates = self._local_index(raw).get(info.filename, [])
+            with open(self._zip_file(raw), "rb") as f:
+                for offset, method, csize, flags in candidates:
+                    for size in {info.compress_size, csize} - {0, 0xFFFFFFFF}:
+                        f.seek(offset)
+                        blob = f.read(size)
+                        try:
+                            data = zlib.decompressobj(-15).decompress(blob) if method == 8 else blob if method == 0 else None
+                        except zlib.error:
+                            continue
+                        if data is not None and len(data) == info.file_size and zlib.crc32(data) == info.CRC:
+                            return data
+        except Exception:
+            return None
+        return None
+
+    def _from_system_unzip(self, raw, info):
+        folders = self.__dict__.setdefault("_unzipped", {})
+        if raw not in folders:
+            folders[raw] = None
+            tool = shutil.which("7z") or shutil.which("7za") or shutil.which("unzip")
+            if tool:
+                target = tempfile.mkdtemp(prefix="wfm_unzip_")
+                atexit.register(shutil.rmtree, target, True)
+                cmd = ([tool, "x", "-y", f"-o{target}", str(self._zip_file(raw))] if "7z" in Path(tool).name
+                       else [tool, "-o", "-qq", str(self._zip_file(raw)), "-d", target])
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1800)
+                folders[raw] = target
+        if not folders[raw]:
+            return None
+        path = Path(folders[raw]) / info.filename
+        if path.is_file():
+            data = path.read_bytes()
+            if zlib.crc32(data) == info.CRC:
+                return data
+        return None
 
     # ---- common API ----
     def list_files(self, folder=""):

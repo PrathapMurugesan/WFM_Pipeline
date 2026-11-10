@@ -127,6 +127,13 @@ def _root_rows(survey, upload, base):
         else:
             rows.append({**base, "deliverable": z["zip"].split("/")[0], "file": z["uploaded"], "status": "zip_opened",
                          "rows": z["files"], "reason": f"read as folder '{z['folder']}'"})
+    if getattr(upload, "zip_recovered", 0):
+        rows.append({**base, "deliverable": "upload", "status": "zip_entries_recovered", "rows": upload.zip_recovered,
+                     "reason": "entries read from their local headers (damaged zip index), each checked by CRC"})
+    if getattr(upload, "zip_unreadable", 0):
+        rows.append({**base, "deliverable": "upload", "status": "ZIP_DAMAGED", "rows": upload.zip_unreadable,
+                     "reason": "zip entries that could not be read even from their local headers - "
+                               "the file is damaged in the upload (ask the vendor to upload it again)"})
     for clean, raw in upload.superseded:
         rows.append({**base, "deliverable": clean.split("/")[0], "file": raw, "status": "superseded_upload",
                      "reason": f"older upload of '{clean}' - the newest one was used"})
