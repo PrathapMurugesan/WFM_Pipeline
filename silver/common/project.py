@@ -467,7 +467,9 @@ class Project:
             self.part = f"report={self.report_id}/{self.upc_folder}"
         else:
             self.part = f"zone={self.zone}/phase={self.phase}/cycle={self.cycle}/{self.upc_folder}"
-        self.out_dir = os.path.join(self.output_root, *self.part.split('/'))
+        self.run_date_folder = f"run_date={os.environ['NSV_RUN_DATE']}" if os.environ.get('NSV_RUN_DATE') else None
+        self.out_dir = os.path.join(self.output_root, *self.part.split('/'),
+                                    *([self.run_date_folder] if self.run_date_folder else []))
         self.d_dirs = {k: self._latest_run(os.path.join(self.project_dir, k)) for k in ['d1', 'd2', 'd4']}   # D3 is not used
         self.sources_used = {}          # label → file actually used (printed + written to the run log)
 

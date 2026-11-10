@@ -10,6 +10,8 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
                                              not given -> looked up in Postgres (wfm_survey_schedule.id = report id,
                                              + wfm_report; see wfm_metadata.py); found -> the zone/phase/cycle layout
       --no-db                                do not look up zone / phase / cycle / UPC in Postgres
+      --force                                process although D1-D4 are not all approved / a lock is set
+      --run-date 2026-11-10                  silver / gold folder run_date= (default: today)
       --project-master <xlsx|csv|s3://...>   gold ris_view needs it (without: ris_trends + intermediate only)
       --tracker <xlsx|s3://...>              NSV Activity Tracker for silver (optional)
       --output <folder>                      local output root (default ./output)
@@ -22,11 +24,13 @@ Input: settings.REPORTS_S3_ROOT of the bronze module (s3://nhai-dhms-uat/wfm_rep
        <report id>/D1..D4/<upload timestamp>-<file name>
 Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when those are given):
     <output>/bronze/nsv/<part>/d1..d4/run=<time>/     bronze   (schema check + extraction)
-    <output>/silver/<part>/dlm_kpi/ dlm_postgres/ dq/ run.log                silver
-    <output>/gold/<part>/ris_trends_dw.csv final_intermediate.csv ris_view_dw.csv gold_run.log   gold
+    <output>/silver/<part>/run_date=<date>/dlm_kpi/ dlm_postgres/ dq/ run.log                silver
+    <output>/gold/<part>/run_date=<date>/ris_trends_dw.csv final_intermediate.csv ris_view_dw.csv gold_run.log
+    <part> from Postgres: zone=UNKNOWN/phase=<survey_phase>/cycle=<survey_cycle>/<UPC>
     <output>/logs/pipeline_<time>_<UPC>.log
 S3 access (input / --output-s3 / s3:// files) uses the normal AWS credential chain (env, ~/.aws, IAM role).
-Exit code: 0 = all layers ok, 1 = a layer failed, 2 = finished with problems (bronze problems / DQ FAIL).
+Exit code: 0 = all layers ok, 1 = a layer failed, 2 = finished with problems (bronze problems / DQ FAIL),
+           3 = not processed: the survey is not ready (D1-D4 not all approved, or locked) - see --force.
 """
 import argparse
 import json
@@ -130,6 +134,9 @@ def main(args):
     ap.add_argument("--only", choices=LAYERS)
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-db", action="store_true", help="do not look up zone/phase/cycle/UPC in Postgres")
+    ap.add_argument("--force", action="store_true", help="process even when the reports are not approved / locked")
+    ap.add_argument("--run-date", default=datetime.now().strftime("%Y-%m-%d"),
+                    help="silver / gold folder run_date=<date> (default: today)")
     o = ap.parse_args(args)
     layers = [o.only] if o.only else LAYERS[LAYERS.index(o.start):]
     if "bronze" in layers and not o.source:
@@ -156,25 +163,29 @@ def main(args):
         try:
             import wfm_metadata
             meta = wfm_metadata.lookup(survey_id)
-            found, where = meta["found"], meta["found_in"]
+        except Exception as e:
+            meta = None
+            log(f"POSTGRES lookup not used ({type(e).__name__}: {e}) - continuing with what was given")
+        if meta is not None:
+            d = meta["details"]
             log(f"POSTGRES: {len(meta['schedule'])} wfm_survey_schedule row(s), {len(meta['reports'])} wfm_report row(s) "
-                f"for {survey_id}; found {found}")
-            for field, path in where.items():
-                log(f"  {field:6} <- {path}")
-            if not zpc and all(found.get(k) for k in ("zone", "phase", "cycle")):
-                o.zone, o.phase, o.cycle = found["zone"], found["phase"], found["cycle"]
+                f"for {survey_id}: UPC {d.get('upc')} zone {d.get('zone')} phase {d.get('phase')} cycle {d.get('cycle')}")
+            if not meta["eligible"]:
+                log("  NOT ready to process: " + "; ".join(meta["not_eligible_because"]))
+                if not o.force:
+                    log("  stopped (--force processes it anyway)")
+                    return 3
+                log("  --force: processed anyway")
+            if not zpc and d.get("phase") and d.get("cycle"):
+                o.zone, o.phase, o.cycle = d["zone"], d["phase"], d["cycle"]
                 zpc = [o.zone, o.phase, o.cycle]
-            elif not zpc:
-                log("  zone / phase / cycle not all found - output filed by report id")
-            if not o.upc and found.get("upc"):
-                o.upc = found["upc"]
+            if not o.upc and d.get("upc"):
+                o.upc = d["upc"]
                 upc = o.upc.replace("/", "-").upper()
             o.report_id = o.report_id or survey_id
             meta_file = out / "metadata" / f"{survey_id}.json"
             meta_file.parent.mkdir(parents=True, exist_ok=True)
             meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
-        except Exception as e:
-            log(f"POSTGRES lookup not used ({type(e).__name__}: {e}) - continuing with what was given")
     if "bronze" not in layers and not upc:
         log("no UPC (give --upc, or let the Postgres lookup find it) - stopped")
         return 1
@@ -204,7 +215,9 @@ def main(args):
     if "bronze" not in layers:
         part = (f"zone={o.zone.upper()}/phase={o.phase}/cycle={o.cycle}/{upc}" if zpc
                 else f"report={o.report_id}/{upc}")
-    bronze_dir, silver_dir, gold_dir = out / "bronze" / "nsv" / part, out / "silver" / part, out / "gold" / part
+    # silver + gold: one folder per run date (a later run of the same survey never overwrites an earlier one)
+    dated = f"{part}/run_date={o.run_date}"
+    bronze_dir, silver_dir, gold_dir = out / "bronze" / "nsv" / part, out / "silver" / dated, out / "gold" / dated
 
     # ---------------------------------------------------------------- silver
     if "silver" in layers:
@@ -215,12 +228,13 @@ def main(args):
         cmd = [sys.executable, "main.py", "--project", str(bronze_dir), "--out", str(out / "silver"),
                "--tracker", tracker, "--no-excel", "--csv"]
         rc = run(log, "SILVER", cmd, SILVER, env={"NSV_BRONZE_S3_ROOT": (o.output_s3.rstrip("/") + "/bronze/nsv")
-                                                 if o.output_s3 else str(out / "bronze" / "nsv")})
+                                                 if o.output_s3 else str(out / "bronze" / "nsv"),
+                                                 "NSV_RUN_DATE": o.run_date})
         if not (silver_dir / "dlm_kpi").is_dir():
             log("SILVER wrote no tables - stopped")
             return 1
         if rc != 0:
-            problems.append(f"silver: a table or DQ check failed - see silver/{part}/run.log and dq/")
+            problems.append(f"silver: a table or DQ check failed - see silver/{dated}/run.log and dq/")
             if o.strict:
                 return 2
 

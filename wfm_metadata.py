@@ -36,6 +36,15 @@ FIELDS = {
     "phase": ["phase", "phase_name", "phase_no", "survey_phase"],
     "cycle": ["cycle", "cycle_name", "cycle_no", "survey_cycle", "cycle_number"],
 }
+UNKNOWN_ZONE = "UNKNOWN"          # wfm_survey_schedule has no zone (only nsv_zone_id) -> zone=UNKNOWN
+
+# ---- when is a survey processed (also used by wfm_trigger.py) ----
+REQUIRED_REPORTS = ["D1", "D2", "D3", "D4"]             # wfm_report.report_type that must all be approved
+APPROVED_STATUSES = {"APPROVED", "REPORT_APPROVED"}     # wfm_report.current_status meaning approved ...
+APPROVED_IF_APPROVED_AT = True                          # ... or approved_at is filled
+CHECK_SCHEDULE_LOCK = True                              # wfm_survey_schedule.is_locked must be false
+CHECK_REPORT_LOCK = True                                # wfm_report.is_locked must be false
+
 UPC = re.compile(r"\b([A-Z])[/_\- ]?(\d{5})[/_\- ]?(\d{5})[/_\- ]?([A-Z]{2})\b", re.IGNORECASE)
 
 
@@ -136,7 +145,96 @@ def lookup(survey_id, verbose=False):
                         break
             break
     out["found"], out["found_in"] = extract(out)
+    sched = out["schedule"][0] if out["schedule"] else {}
+    out["eligible"], out["not_eligible_because"] = eligibility(sched, out["reports"])
+    out["details"] = survey_details(sched, out["found"]) if sched else {}
+    out["fingerprint"] = fingerprint(sched, out["reports"]) if sched else None
     return out
+
+
+def list_surveys(source_system="NSV"):
+    """Every active survey with its wfm_report rows: [{'schedule': row, 'reports': [rows]}] (for wfm_trigger.py)."""
+    from psycopg2 import sql
+    creds = load_creds()
+    for db in databases(creds):
+        with connect(creds, db) as conn, conn.cursor() as cur:
+            s_schema, s_cols = find_table(cur, SCHEDULE_TABLE, creds.get("DB_SCHEMA"))
+            r_schema, _ = find_table(cur, REPORT_TABLE, creds.get("DB_SCHEMA"))
+            if not s_schema or not r_schema:
+                continue
+            names = {c for c, _ in s_cols}
+            where = [sql.SQL("TRUE")]
+            if "source_system" in names and source_system:
+                where.append(sql.SQL("source_system = {}").format(sql.Literal(source_system)))
+            if "deleted_at" in names:
+                where.append(sql.SQL("deleted_at IS NULL"))
+            cur.execute(sql.SQL("SELECT * FROM {}.{} WHERE ").format(sql.Identifier(s_schema), sql.Identifier(SCHEDULE_TABLE))
+                        + sql.SQL(" AND ").join(where))
+            schedules = _rows(cur)
+            cur.execute(sql.SQL("SELECT * FROM {}.{} WHERE survey_schedule_id IS NOT NULL").format(
+                sql.Identifier(r_schema), sql.Identifier(REPORT_TABLE)))
+            reports = {}
+            for r in _rows(cur):
+                reports.setdefault(str(r["survey_schedule_id"]), []).append(r)
+            return [{"schedule": s, "reports": reports.get(str(s["id"]), [])} for s in schedules]
+    raise RuntimeError(f"tables {SCHEDULE_TABLE} / {REPORT_TABLE} not found in {databases(creds)}")
+
+
+# =============================================================================
+# Is the survey ready to process?
+# =============================================================================
+def report_approved(row):
+    status = str(row.get("current_status") or "").strip().upper()
+    return status in APPROVED_STATUSES or (APPROVED_IF_APPROVED_AT and bool(row.get("approved_at")))
+
+
+def _true(v):
+    return v is True or str(v).strip().lower() in ("true", "t", "1", "yes")
+
+
+def eligibility(schedule, reports):
+    """(ok, [reasons it is not]) for one survey: schedule row + its wfm_report rows."""
+    why = []
+    if not schedule:
+        return False, ["no wfm_survey_schedule row"]
+    if CHECK_SCHEDULE_LOCK and _true(schedule.get("is_locked")):
+        why.append("survey is locked")
+    if "is_active" in schedule and not _true(schedule.get("is_active")):
+        why.append("survey is not active")
+    if schedule.get("deleted_at"):
+        why.append("survey is deleted")
+    by_type = {}
+    for r in reports:                                    # newest row per report type
+        t = str(r.get("report_type") or "").upper()
+        if t not in by_type or str(r.get("updated_at") or "") > str(by_type[t].get("updated_at") or ""):
+            by_type[t] = r
+    for t in REQUIRED_REPORTS:
+        r = by_type.get(t)
+        if r is None:
+            why.append(f"{t}: no report")
+        elif not report_approved(r):
+            why.append(f"{t}: not approved ({r.get('current_status')})")
+        elif CHECK_REPORT_LOCK and _true(r.get("is_locked")):
+            why.append(f"{t}: report is locked")
+    return not why, why
+
+
+def fingerprint(schedule, reports):
+    """Changes when the survey or any of its reports changes -> processed again (incremental)."""
+    parts = [str(schedule.get("updated_at"))] + sorted(
+        f"{r.get('report_type')}:{r.get('latest_version_id')}:{r.get('updated_at')}:{r.get('current_status')}"
+        for r in reports)
+    return "|".join(parts)
+
+
+def survey_details(schedule, found=None):
+    """The values the pipeline needs, from the schedule row (zone always UNKNOWN unless a zone column exists)."""
+    found = found or {}
+    return {"survey_id": schedule.get("id"), "upc": found.get("upc") or _clean("upc", schedule.get("upc")),
+            "zone": found.get("zone") or UNKNOWN_ZONE,
+            "phase": found.get("phase") or _clean("phase", schedule.get("survey_phase")),
+            "cycle": found.get("cycle") or _clean("cycle", schedule.get("survey_cycle")),
+            "project_name": schedule.get("project_name"), "schedule_name": schedule.get("schedule_name")}
 
 
 # =============================================================================
@@ -220,6 +318,8 @@ def main(args):
     print("\nfound:")
     for f in FIELDS:
         print(f"  {f:6} = {r['found'].get(f) or '-':20} {('<- ' + r['found_in'][f]) if f in r['found_in'] else '(not found - add its column name to FIELDS)'}")
+    print(f"\npipeline values: {r['details']}")
+    print("ready to process: " + ("YES" if r["eligible"] else "NO - " + "; ".join(r["not_eligible_because"])))
     target = ROOT / "output" / "metadata" / f"{survey_id}.json"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(r, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
