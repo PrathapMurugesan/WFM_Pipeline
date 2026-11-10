@@ -120,6 +120,13 @@ def _root_rows(survey, upload, base):
     for key, name in upload.duplicates:
         rows.append({**base, "deliverable": key, "file": name, "status": "NOT_IN_SCHEMA",
                      "reason": f"a second folder for {key} - only '{upload.folders[key]}' was read"})
+    for z in getattr(upload, "zips", []):
+        if z.get("error"):
+            rows.append({**base, "deliverable": z["zip"].split("/")[0], "file": z["uploaded"], "status": "READ_ERROR",
+                         "reason": f"zip could not be opened: {z['error']}"})
+        else:
+            rows.append({**base, "deliverable": z["zip"].split("/")[0], "file": z["uploaded"], "status": "zip_opened",
+                         "rows": z["files"], "reason": f"read as folder '{z['folder']}'"})
     for clean, raw in upload.superseded:
         rows.append({**base, "deliverable": clean.split("/")[0], "file": raw, "status": "superseded_upload",
                      "reason": f"older upload of '{clean}' - the newest one was used"})
@@ -173,7 +180,8 @@ def main(args):
         logger.error(f"'{o.upc}' is not a UPC (like N/02001/19004/DL)")
         return 1
     settings.UPLOAD = {"report_id": report_id, "source": upload.describe(),
-                       "deliverable_folders": dict(upload.folders), "superseded_uploads": len(upload.superseded)}
+                       "deliverable_folders": dict(upload.folders), "superseded_uploads": len(upload.superseded),
+                       "zips": getattr(upload, "zips", [])}
     survey = Survey(upc, report_id=report_id, zone=o.zone.upper() if o.zone else None,
                     phase=str(o.phase) if o.phase else None, cycle=str(o.cycle) if o.cycle else None)
     wanted = o.deliverables or schema.deliverable_keys()

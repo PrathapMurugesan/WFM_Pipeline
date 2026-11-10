@@ -34,8 +34,9 @@ def _env_flag(name, default):
 
 
 CHECK_HEADERS = _env_flag("NSV_CHECK_HEADERS", True)            # sheet / layer missing a schema header -> REJECTED
-STOP_IF_WORKBOOK_MISSING = _env_flag("NSV_STOP_IF_WORKBOOK_MISSING", True)   # required workbook missing -> the
-                                                                             # deliverable is not extracted
+STOP_IF_WORKBOOK_MISSING = _env_flag("NSV_STOP_IF_WORKBOOK_MISSING", False)  # True = a missing required workbook
+                                     # stops the whole deliverable; False = the other workbooks are still extracted
+                                     # (the missing one is a WORKBOOK_MISSING problem either way)
 UNEXPECTED_IS_PROBLEM = _env_flag("NSV_UNEXPECTED_IS_PROBLEM", True)   # file / sheet / layer not in the schema
 EXTRACT_UNMATCHED = False                                       # what the schema does not describe: never extracted
 IGNORE_FILES = ["~$*", "Thumbs.db", "desktop.ini", ".DS_Store"]  # never reported

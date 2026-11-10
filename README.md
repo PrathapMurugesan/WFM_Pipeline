@@ -17,6 +17,10 @@ s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<report id>/D1/1793260589326-
 - The upload timestamp in front of each file name (`1793260589326-`) is removed before any check. The name as uploaded and the
   upload time are kept in the bronze inventory (`uploaded_name`, `uploaded_at`).
 - A file uploaded twice is read from its **newest** upload only. The older copy is listed as `superseded_upload`.
+- **Zip files** (for example `D4/…-Pothole_Images.zip`) are opened and read as the folder they stand for (`d4/Pothole_Images/…`), in any deliverable.
+  If the zip's single top folder repeats the zip's name, it is not repeated. `__MACOSX` entries are skipped. On S3, each zip is downloaded once to a temp folder.
+  Each opened zip is listed in the bronze report (`zip_opened`).
+- A missing required workbook (for example no CRRI_PCI) is a `WORKBOOK_MISSING` problem, but the deliverable's other workbooks are still extracted.
 - The root is `REPORTS_S3_ROOT` in [`bronze/settings.py`](bronze/settings.py), or the environment variable `NSV_REPORTS_S3_ROOT`.
 
 ## How a survey gets processed

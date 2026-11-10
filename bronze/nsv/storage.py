@@ -12,19 +12,32 @@ READ - the uploaded report, seen as d1..d4 with clean file names:
     - deliverable folders 'D1'..'D4' or 'Deliverable 1 - RAMS Data' .. (directly or one level down) -> d1..d4
     - the upload timestamp in front of a file name ('1793260589326-') is removed; it is kept in uploaded_name()
     - the same file uploaded twice (two timestamps): the NEWEST is used, the older one is listed in .superseded
+    - a .zip is opened and read as the folder it stands for (folder name = zip name without the timestamp):
+          D4/1794207928512-Crack_Images_DHMS.zip  [Crack Images_DHMS/L1/a.jpg]  ->  d4/Crack_Images_DHMS/L1/a.jpg
+      (a single top folder inside the zip with the same name is not repeated; __MACOSX / ._ entries are skipped;
+       on S3 the zip is downloaded once to a temporary folder). The zips are listed in .zips.
 
 WRITE - LocalStorage(root): the bronze output folder.
 
 Common methods: list_files(folder), read_bytes(path), size(path), full_path(path), describe()
 Paths are relative, with forward slashes.
 """
+import atexit
 import re
+import shutil
 import sys
+import tempfile
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
 DELIVERABLE_FOLDER = re.compile(r"^(?:deliverable\s*[-_.]?\s*|d)(\d)(?![0-9])", re.IGNORECASE)   # D1, Deliverable 1 - ..
 UPLOAD_PREFIX = re.compile(r"^(\d{10,13})[-_ ](?=.)")       # '1793260589326-LRMS_DataTemplate.xlsx' (epoch s / ms)
+
+
+def _norm(text):
+    """'Crack Images_DHMS' == 'Crack_Images_DHMS' == 'crackimagesdhms'"""
+    return re.sub(r"[^a-z0-9]", "", str(text).lower())
 
 
 def split_upload_name(name):
@@ -125,6 +138,47 @@ class ReportStorage:
                     continue
             self._files[clean], self._stamps[clean], self._sizes[clean] = path, stamp, size
         self.other = sorted(self.other)
+        self._expand_zips()
+
+    # ---- zip archives: read as folders ----
+    def _expand_zips(self):
+        self.zips, self._open_zips = [], {}
+        for clean in [p for p in self._files if p.lower().endswith(".zip")]:
+            raw, stamp = self._files.pop(clean), self._stamps.pop(clean)
+            self._sizes.pop(clean)
+            base = clean[:-4]                                     # d4/Crack_Images_DHMS
+            try:
+                zf = zipfile.ZipFile(self._zip_file(raw))
+            except Exception as e:
+                self.zips.append({"zip": clean, "uploaded": raw, "error": f"{type(e).__name__}: {e}"})
+                self._files[clean], self._stamps[clean], self._sizes[clean] = raw, stamp, 0   # listed, not readable
+                continue
+            members = [i for i in zf.infolist() if not i.is_dir()]
+            names = [i.filename.replace("\\", "/") for i in members]
+            keep = [(i, n) for i, n in zip(members, names)
+                    if not n.startswith("__MACOSX/") and not PurePosixPath(n).name.startswith("._")]
+            tops = {n.split("/")[0] for _, n in keep}
+            strip = (len(tops) == 1 and all("/" in n for _, n in keep)
+                     and _norm(next(iter(tops))) == _norm(PurePosixPath(base).name))
+            for info, name in keep:
+                rel = name.split("/", 1)[1] if strip else name
+                rel = PurePosixPath(rel)
+                path = f"{base}/{(rel.parent / split_upload_name(rel.name)[0]).as_posix()}".replace("/./", "/")
+                self._files[path] = (raw, info.filename)
+                self._stamps[path], self._sizes[path] = stamp, info.file_size
+            self._open_zips[raw] = zf
+            self.zips.append({"zip": clean, "uploaded": raw, "files": len(keep), "folder": base,
+                              "top_folder_dropped": strip})
+
+    def _zip_file(self, raw):
+        return self._raw_local(raw)
+
+    def _read(self, path):
+        entry = self._files[path]
+        if isinstance(entry, tuple):                              # inside a zip
+            raw, member = entry
+            return self._open_zips[raw].read(member)
+        return self._read_raw(entry)
 
     # ---- common API ----
     def list_files(self, folder=""):
@@ -134,9 +188,15 @@ class ReportStorage:
     def size(self, path):
         return self._sizes[path]
 
+    def read_bytes(self, path):
+        return self._read(path)
+
     def uploaded_name(self, path):
-        """The file name as uploaded (with the timestamp prefix)."""
-        return PurePosixPath(self._files[path]).name
+        """The file name as uploaded (with the timestamp prefix); inside a zip: '<zip as uploaded>!<entry>'."""
+        entry = self._files[path]
+        if isinstance(entry, tuple):
+            return f"{PurePosixPath(entry[0]).name}!{entry[1]}"
+        return PurePosixPath(entry).name
 
     def uploaded_at(self, path):
         return upload_time(self._stamps.get(path))
@@ -153,11 +213,17 @@ class LocalReportStorage(ReportStorage):
     def describe(self):
         return f"local:{str(self.root).removeprefix(chr(92) * 2 + '?' + chr(92))}"
 
-    def read_bytes(self, path):
-        return (self.root / self._files[path]).read_bytes()
+    def _raw_local(self, raw):
+        return self.root / raw
+
+    def _read_raw(self, raw):
+        return (self.root / raw).read_bytes()
 
     def full_path(self, path):
-        return str(self.root / self._files[path]).removeprefix("\\\\?\\")
+        entry = self._files[path]
+        if isinstance(entry, tuple):
+            return f"{str(self.root / entry[0]).removeprefix(chr(92) * 2 + '?' + chr(92))}!{entry[1]}"
+        return str(self.root / entry).removeprefix("\\\\?\\")
 
 
 class S3ReportStorage(ReportStorage):
@@ -181,8 +247,21 @@ class S3ReportStorage(ReportStorage):
     def describe(self):
         return f"s3://{self.bucket}/{self.prefix}"
 
-    def read_bytes(self, path):
-        return self.s3.get_object(Bucket=self.bucket, Key=self.prefix + self._files[path])["Body"].read()
+    def _raw_local(self, raw):
+        """A zip is read many times: downloaded once to a temporary folder (removed when the run ends)."""
+        if not hasattr(self, "_tmp"):
+            self._tmp = tempfile.mkdtemp(prefix="wfm_zip_")
+            atexit.register(shutil.rmtree, self._tmp, True)
+        target = Path(self._tmp) / raw.replace("/", "__")
+        if not target.exists():
+            self.s3.download_file(self.bucket, self.prefix + raw, str(target))
+        return target
+
+    def _read_raw(self, raw):
+        return self.s3.get_object(Bucket=self.bucket, Key=self.prefix + raw)["Body"].read()
 
     def full_path(self, path):
-        return f"s3://{self.bucket}/{self.prefix}{self._files[path]}"
+        entry = self._files[path]
+        if isinstance(entry, tuple):
+            return f"s3://{self.bucket}/{self.prefix}{entry[0]}!{entry[1]}"
+        return f"s3://{self.bucket}/{self.prefix}{entry}"
