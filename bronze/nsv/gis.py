@@ -232,7 +232,8 @@ def _extract_shapefiles(run, std_key, std_folder, std_files, cfg, meta):
             try:
                 df = read_csv_bytes(settings.INPUT.read_bytes(parts[".csv"]))
                 df = df.astype(object).where(df != "", None)
-                _gate_and_save(run, df, layer.get("csv_headers"), f"{label}_csv", (std_key, "shp", key, "csv"),
+                stem = safe_name(PurePosixPath(parts[".csv"]).stem)       # previous bronze name: d3_ca_cracking
+                _gate_and_save(run, df, layer.get("csv_headers"), f"{label}_csv", (std_key, stem),
                                meta, csv_entry, first_row=2)
             except Exception as e:
                 logger.error(f"[{label}_csv] could not read: {e}")

@@ -13,6 +13,7 @@ ALWAYS review the diff (git diff schema/nsv_schema.json) before using it: it bec
 """
 import hashlib
 import json
+import re
 import sys
 import tempfile
 from datetime import date
@@ -30,11 +31,24 @@ from nsv.matching import identify_names
 from nsv.storage import DELIVERABLE_FOLDER as DELIVERABLE, LocalStorage
 
 
+def _norm(text):
+    return re.sub(r"[^a-z0-9%]", "", str(text).lower())
+
+
 def _merge(old, new_names_types, letters=None):
-    """New header list; aliases of headers that keep their name are kept."""
+    """New header list; aliases are kept. A header already in the schema under a spelling that differs only in
+    case / spaces / punctuation ('NH Number' vs 'NHNumber') keeps the schema name (= the saved column name, as in
+    the previous NSV bronze) and gets the file's spelling as an alias."""
     aliases = {h["name"]: h.get("aliases", []) for h in old or []}
+    canonical = {_norm(h["name"]): h["name"] for h in old or []}
     out = []
     for i, (name, kind) in enumerate(new_names_types):
+        keep = canonical.get(_norm(name))
+        if keep and keep != name:
+            aliases.setdefault(keep, [])
+            if name not in aliases[keep]:
+                aliases[keep] = aliases[keep] + [name]
+            name = keep
         h = {"name": name}
         if letters:
             h["excel_column"] = letters[i]

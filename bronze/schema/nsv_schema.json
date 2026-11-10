@@ -413,10 +413,12 @@
                   "aliases": []
                 },
                 {
-                  "name": "Scheme Name",
+                  "name": "SchemeName",
                   "excel_column": "M",
                   "value_type": "text",
-                  "aliases": []
+                  "aliases": [
+                    "Scheme Name"
+                  ]
                 },
                 {
                   "name": "DLPStatus",
@@ -541,10 +543,12 @@
               ],
               "headers": [
                 {
-                  "name": "NHNumber",
+                  "name": "NH Number",
                   "excel_column": "A",
                   "value_type": "text",
-                  "aliases": []
+                  "aliases": [
+                    "NHNumber"
+                  ]
                 },
                 {
                   "name": "LRPName",
@@ -589,10 +593,12 @@
                   "aliases": []
                 },
                 {
-                  "name": "SurveyDate",
+                  "name": "Survey Date",
                   "excel_column": "I",
                   "value_type": "date",
-                  "aliases": []
+                  "aliases": [
+                    "SurveyDate"
+                  ]
                 },
                 {
                   "name": "OldNHNumber",
@@ -601,10 +607,12 @@
                   "aliases": []
                 },
                 {
-                  "name": "SectionCode",
+                  "name": "Section Code",
                   "excel_column": "K",
                   "value_type": "text",
-                  "aliases": []
+                  "aliases": [
+                    "SectionCode"
+                  ]
                 }
               ]
             },
@@ -735,10 +743,12 @@
                   "aliases": []
                 },
                 {
-                  "name": "Officer Name",
+                  "name": "OfficerName",
                   "excel_column": "C",
                   "value_type": "empty",
-                  "aliases": []
+                  "aliases": [
+                    "Officer Name"
+                  ]
                 },
                 {
                   "name": "MobileNumber",
@@ -747,10 +757,12 @@
                   "aliases": []
                 },
                 {
-                  "name": "Contact Number",
+                  "name": "ContactNumber",
                   "excel_column": "E",
                   "value_type": "empty",
-                  "aliases": []
+                  "aliases": [
+                    "Contact Number"
+                  ]
                 },
                 {
                   "name": "Address",
@@ -765,10 +777,12 @@
                   "aliases": []
                 },
                 {
-                  "name": "Entrusted To",
+                  "name": "EntrustedTo",
                   "excel_column": "H",
                   "value_type": "text",
-                  "aliases": []
+                  "aliases": [
+                    "Entrusted To"
+                  ]
                 }
               ]
             },

@@ -551,6 +551,9 @@ def extract_image_folders(run, folder, image_folders, files=None, location=None)
             logger.info(f"[{group}] {done}/{total} images read")
 
         rows = read_images(paths, make_job, settings.IMAGE_WORKERS, progress=progress)
+        clean = {settings.INPUT.full_path(p): PurePosixPath(p).name for p in paths}   # without upload timestamp
+        for r in rows:
+            r["file_name"] = clean.get(r.get("image_path"), r.get("file_name"))
         if location:
             rows = [locate(r, lanes, offsets, settings.IMAGE_LOCATION_AGREE_M) for r in rows]
         df = pd.DataFrame(rows)
