@@ -46,7 +46,7 @@ cd /opt && git clone https://github.com/PrathapMurugesan/WFM_Pipeline.git && cd 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 nano postgres_creds.txt && chmod 600 postgres_creds.txt      # DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_SCHEMA / TARGET_DBS
 .venv/bin/python wfm_trigger.py --dry-run                   # what would be processed, and why the rest is not
-./deploy/install_cron.sh 30                                 # every 30 min  (OUTPUT_S3=s3://... to also upload)
+OUTPUT_S3=s3://dhms-new-stgae/NSV_Pipeline ./deploy/install_cron.sh 30   # every 30 min, results uploaded to S3
 ```
 The instance's IAM role needs to read `nhai-dhms-uat/wfm_reports/*` (and write to `OUTPUT_S3` if set).
 `postgres_creds.txt` is git-ignored and never committed.
@@ -59,6 +59,15 @@ The instance's IAM role needs to read `nhai-dhms-uat/wfm_reports/*` (and write t
 .venv/bin/python wfm_trigger.py --survey <survey id> --force   # through the trigger (state updated)
   run_pipeline options: --upc / --zone --phase --cycle (instead of Postgres), --no-db, --run-date,
                         --project-master <xlsx|s3://> (gold ris_view), --output-s3 s3://<bucket>/<prefix>, --from silver
+```
+
+## Output in S3 (`--output-s3`, or the environment variable `NSV_OUTPUT_S3`)
+The same layout as the earlier NSV pipeline, under `s3://dhms-new-stgae/NSV_Pipeline/`:
+```
+bronze/nsv/zone=B/phase=2/cycle=1/<UPC>/d1..d4/run=<time>/     bronze/nsv/_batches/
+silver/zone=B/phase=2/cycle=1/<UPC>/run_date=<date>/           silver/_batches/
+gold/zone=B/phase=2/cycle=1/<UPC>/run_date=<date>/
+logs/pipeline_<time>_<UPC>.log     metadata/<survey id>.json     state/wfm_trigger_state.json
 ```
 
 ## Output (`./output`, or `--output`)

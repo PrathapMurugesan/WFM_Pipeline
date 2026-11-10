@@ -15,7 +15,8 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
       --project-master <xlsx|csv|s3://...>   gold ris_view needs it (without: ris_trends + intermediate only)
       --tracker <xlsx|s3://...>              NSV Activity Tracker for silver (optional)
       --output <folder>                      local output root (default ./output)
-      --output-s3 s3://bucket/prefix         also upload every layer there (same layout)
+      --output-s3 s3://bucket/prefix         also upload every layer there (same layout); default: env NSV_OUTPUT_S3
+                                             e.g. s3://dhms-new-stgae/NSV_Pipeline (as the earlier NSV pipeline)
       --from silver | --only gold            start at / run only one layer (bronze already in --output;
                                              give --report-id + --upc, or --zone/--phase/--cycle + --upc)
       --strict                               stop when bronze has problems or a silver DQ check fails
@@ -57,6 +58,7 @@ class Log:
     """Print and append to the pipeline log."""
     def __init__(self, path):
         path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
         self.file = open(path, "a", encoding="utf-8")
 
     def __call__(self, text=""):
@@ -112,6 +114,11 @@ def upload(log, local, s3_url):
     log(f"  uploaded {n} file(s) -> {s3_url}")
 
 
+def upload_file(local, s3_url):
+    bucket, _, key = s3_url[5:].partition("/")
+    s3_client().upload_file(str(local), bucket, key)
+
+
 def newest_bronze_batch(out):
     batches = sorted((out / "bronze" / "nsv" / "_batches").glob("batch=*.json"))
     return json.loads(batches[-1].read_text(encoding="utf-8")) if batches else None
@@ -129,7 +136,8 @@ def main(args):
     ap.add_argument("--project-master")
     ap.add_argument("--tracker")
     ap.add_argument("--output", default=str(ROOT / "output"))
-    ap.add_argument("--output-s3")
+    ap.add_argument("--output-s3", default=os.environ.get("NSV_OUTPUT_S3"),
+                    help="s3://bucket/prefix to upload every layer to (default: env NSV_OUTPUT_S3)")
     ap.add_argument("--from", dest="start", choices=LAYERS, default="bronze")
     ap.add_argument("--only", choices=LAYERS)
     ap.add_argument("--strict", action="store_true")
@@ -277,6 +285,17 @@ def main(args):
             log(f"  {layer:6} {local}")
     for p in problems:
         log(f"  PROBLEM  {p}")
+    if o.output_s3:                                     # last: the log is complete now
+        root = o.output_s3.rstrip("/")
+        try:
+            meta = out / "metadata" / f"{o.report_id}.json" if o.report_id else None
+            if meta and meta.is_file():
+                upload_file(meta, f"{root}/metadata/{meta.name}")
+            log(f"  log -> {root}/logs/{log.path.name}")
+            log.file.flush()
+            upload_file(log.path, f"{root}/logs/{log.path.name}")
+        except Exception as e:
+            log(f"  log / metadata upload failed: {type(e).__name__}: {e}")
     return 2 if problems else 0
 
 

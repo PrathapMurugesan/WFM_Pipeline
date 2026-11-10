@@ -128,7 +128,8 @@ def main(args):
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="with --survey: process even if not ready / unchanged")
     ap.add_argument("--output", default=str(ROOT / "output"))
-    ap.add_argument("--output-s3")
+    ap.add_argument("--output-s3", default=os.environ.get("NSV_OUTPUT_S3"),
+                    help="s3://bucket/prefix (default: env NSV_OUTPUT_S3); state is kept there too")
     ap.add_argument("--project-master")
     ap.add_argument("--tracker")
     o = ap.parse_args(args)
