@@ -14,8 +14,8 @@ Each run:
   3. S3: the upload must be there - reports/<survey id>/ with the D1..D4 folders         (settings REPORTS_S3_ROOT)
   4. new or changed? fingerprint = report versions / status / update times + the S3 files (count, newest change);
      the same fingerprint as the last successful run -> skipped
-  5. run_pipeline.py <survey id> with UPC / phase / cycle from Postgres, zone UNKNOWN -> bronze, silver, gold
-     (silver / gold under run_date=<today>)
+  5. run_pipeline.py <survey id> with UPC / zone / phase / cycle from Postgres -> bronze, silver, gold
+     zone from master_zone via nsv_zone_id (UNKNOWN if not found); silver / gold under run_date=<today>
   6. state: output/state/wfm_trigger_state.json (+ <output-s3>/state/ when --output-s3 is set), one entry per survey:
      fingerprint, status ok / problems / failed, exit code, run time, attempts. A failed run is retried on the next
      trigger, up to MAX_ATTEMPTS times per fingerprint.
@@ -188,7 +188,7 @@ def main(args):
                 log(f"  skip {sid}: failed {last['attempts']} times on this version - fix and rerun with --survey {sid} --force")
                 continue
         reason = "forced" if o.force else ("new" if not last else "changed" if last.get("fingerprint") != fp else "retry")
-        log(f"  {reason.upper():8} {sid}  UPC {details['upc']}  phase {details['phase']}  cycle {details['cycle']}  "
+        log(f"  {reason.upper():8} {sid}  UPC {details['upc']}  zone {details['zone']}  phase {details['phase']}  cycle {details['cycle']}  "
             f"S3 {upload['files']} file(s) {upload['deliverables']}")
         if o.dry_run:
             counts["would_run"] = counts.get("would_run", 0) + 1
@@ -199,7 +199,8 @@ def main(args):
         code = run_survey(item, details, o, out)
         status = PIPELINE_STATUS.get(code, "failed")
         state.put(sid, status=status, exit_code=code, finished_at=now(), minutes=round((datetime.now() - started).seconds / 60, 1),
-                  run_date=started.strftime("%Y-%m-%d"), phase=details["phase"], cycle=details["cycle"],
+                  run_date=started.strftime("%Y-%m-%d"), zone=details["zone"], phase=details["phase"],
+                  cycle=details["cycle"], ro=details.get("ro"), state=details.get("state"), piu=details.get("piu"),
                   project_name=details.get("project_name"))
         counts[status] = counts.get(status, 0) + 1
         failed += status == "failed"

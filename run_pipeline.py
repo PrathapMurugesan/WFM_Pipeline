@@ -26,7 +26,7 @@ Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when 
     <output>/bronze/nsv/<part>/d1..d4/run=<time>/     bronze   (schema check + extraction)
     <output>/silver/<part>/run_date=<date>/dlm_kpi/ dlm_postgres/ dq/ run.log                silver
     <output>/gold/<part>/run_date=<date>/ris_trends_dw.csv final_intermediate.csv ris_view_dw.csv gold_run.log
-    <part> from Postgres: zone=UNKNOWN/phase=<survey_phase>/cycle=<survey_cycle>/<UPC>
+    <part> from Postgres: zone=<master_zone.zone_code>/phase=<survey_phase>/cycle=<survey_cycle>/<UPC>
     <output>/logs/pipeline_<time>_<UPC>.log
 S3 access (input / --output-s3 / s3:// files) uses the normal AWS credential chain (env, ~/.aws, IAM role).
 Exit code: 0 = all layers ok, 1 = a layer failed, 2 = finished with problems (bronze problems / DQ FAIL),

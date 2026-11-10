@@ -26,9 +26,12 @@ wfm_trigger.py  (cron, every 30 min)
   2. ready?    D1, D2, D3, D4 reports approved (current_status APPROVED or approved_at set), is_locked false
   3. S3        s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<survey id>/D1..D4 there?
   4. changed?  report versions / status / update times + S3 files vs the last successful run
-  5. run_pipeline.py  bronze -> silver -> gold   (UPC, survey_phase, survey_cycle from Postgres; zone UNKNOWN)
+  5. run_pipeline.py  bronze -> silver -> gold   (UPC, survey_phase, survey_cycle; zone = master_zone.zone_code via nsv_zone_id)
   6. state     output/state/wfm_trigger_state.json  (+ <output-s3>/state/)
 ```
+Zone: `wfm_survey_schedule.nsv_zone_id` -> `master_zone.zone_code` (e.g. `B` = ZONE-B (WEST)); without it via
+`upc_project_zone` (project_id); `UNKNOWN` only when neither gives a zone. RO / state / PIU names come from
+`master_region_zone` / `master_state` / `master_piu` (saved in `output/metadata/<survey id>.json` and the trigger state).
 The rules are at the top of [`wfm_metadata.py`](wfm_metadata.py): `REQUIRED_REPORTS`, `APPROVED_STATUSES`, and the lock checks.
 A failed run is retried on the next trigger, up to 3 times per version.
 
@@ -56,9 +59,9 @@ The instance's IAM role needs to read `nhai-dhms-uat/wfm_reports/*` (and write t
 
 ## Output (`./output`, or `--output`)
 ```
-output/bronze/nsv/zone=UNKNOWN/phase=<p>/cycle=<c>/<UPC>/d1..d4/run=<time>/      + bronze/nsv/_batches/batch=<time>_report.csv
-output/silver/zone=UNKNOWN/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/dlm_kpi/ dlm_postgres/ dq/ run.log
-output/gold/zone=UNKNOWN/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/ris_trends_dw.csv final_intermediate.csv [ris_view_dw.csv]
+output/bronze/nsv/zone=<zone>/phase=<p>/cycle=<c>/<UPC>/d1..d4/run=<time>/      + bronze/nsv/_batches/batch=<time>_report.csv
+output/silver/zone=<zone>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/dlm_kpi/ dlm_postgres/ dq/ run.log
+output/gold/zone=<zone>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/ris_trends_dw.csv final_intermediate.csv [ris_view_dw.csv]
 output/metadata/<survey id>.json     output/logs/     output/state/wfm_trigger_state.json
 ```
 Without Postgres values (`--no-db` and no `--zone/--phase/--cycle`), the output is filed as `report=<survey id>/<UPC>`.

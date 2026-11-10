@@ -36,7 +36,19 @@ FIELDS = {
     "phase": ["phase", "phase_name", "phase_no", "survey_phase"],
     "cycle": ["cycle", "cycle_name", "cycle_no", "survey_cycle", "cycle_number"],
 }
-UNKNOWN_ZONE = "UNKNOWN"          # wfm_survey_schedule has no zone (only nsv_zone_id) -> zone=UNKNOWN
+UNKNOWN_ZONE = "UNKNOWN"          # used only when the zone cannot be found (see enrich)
+
+# ---- names behind the schedule's ids (foreign keys of wfm_survey_schedule, found with tools/analyse_zone.py) ----
+#   nsv_zone_id -> master_zone.zone_code ('B') / zone_name ('ZONE-B (WEST)')     (source NSV)
+#   no nsv_zone_id -> upc_project_zone (project_id -> nsv_zone_id) -> master_zone
+#   ro_id -> master_region_zone.region_name, state_id -> master_state.state_name, piu_id -> master_piu.piu_name
+LOOKUPS = {
+    "zone":  ("master_zone", "id", ("zone_code", "zone_name", "source")),
+    "ro":    ("master_region_zone", "id", ("region_name",)),
+    "state": ("master_state", "id", ("state_name",)),
+    "piu":   ("master_piu", "id", ("piu_name",)),
+    "project_zone": ("upc_project_zone", "project_id", ("nsv_zone_id",)),
+}
 
 # ---- when is a survey processed (also used by wfm_trigger.py) ----
 REQUIRED_REPORTS = ["D1", "D2", "D3", "D4"]             # wfm_report.report_type that must all be approved
@@ -99,6 +111,37 @@ def _rows(cur):
     return [{c: _jsonable(v) for c, v in zip(cols, r)} for r in cur.fetchall()]
 
 
+def load_lookups(cur, schema):
+    """{name: {key: {column: value}}} of the small master tables in LOOKUPS (a missing table -> {})."""
+    from psycopg2 import sql
+    out = {}
+    for name, (table, key, cols) in LOOKUPS.items():
+        try:
+            cur.execute(sql.SQL("SELECT {}, {} FROM {}.{}").format(
+                sql.Identifier(key), sql.SQL(", ").join(map(sql.Identifier, cols)),
+                sql.Identifier(schema), sql.Identifier(table)))
+            out[name] = {str(r[0]): dict(zip(cols, r[1:])) for r in cur.fetchall()}
+        except Exception:
+            cur.connection.rollback()
+            out[name] = {}
+    return out
+
+
+def enrich(schedule, lookups):
+    """Add _zone_code / _zone_name / _ro_name / _state_name / _piu_name to a schedule row (in place)."""
+    zid = schedule.get("nsv_zone_id")
+    if not zid and schedule.get("project_id"):
+        zid = (lookups.get("project_zone", {}).get(str(schedule["project_id"])) or {}).get("nsv_zone_id")
+    zone = lookups.get("zone", {}).get(str(zid)) if zid else None
+    schedule["_zone_code"] = zone.get("zone_code") if zone else None
+    schedule["_zone_name"] = zone.get("zone_name") if zone else None
+    schedule["_zone_source"] = ("nsv_zone_id" if schedule.get("nsv_zone_id") else "upc_project_zone") if zone else None
+    for name, col, idcol in (("ro", "region_name", "ro_id"), ("state", "state_name", "state_id"), ("piu", "piu_name", "piu_id")):
+        row = lookups.get(name, {}).get(str(schedule.get(idcol))) if schedule.get(idcol) else None
+        schedule[f"_{name}_name"] = row.get(col) if row else None
+    return schedule
+
+
 def find_table(cur, table, schema=None):
     """(schema, columns [(name, type)]) of the table; the configured schema first, then any schema."""
     cur.execute("""SELECT table_schema, column_name, data_type FROM information_schema.columns
@@ -135,6 +178,8 @@ def lookup(survey_id, verbose=False):
             out["columns"] = {f"{s_schema}.{SCHEDULE_TABLE}": s_cols, f"{r_schema}.{REPORT_TABLE}": r_cols}
             if s_schema:
                 out["schedule"] = fetch(cur, s_schema, SCHEDULE_TABLE, "id", survey_id)
+                if out["schedule"]:
+                    enrich(out["schedule"][0], load_lookups(cur, s_schema))
             if r_schema:
                 # wfm_report -> the survey: a column that names the schedule / survey, else its own id
                 links = [c for c, _ in r_cols if re.search(r"(survey|schedule)", c, re.I)] + ["id"]
@@ -171,6 +216,9 @@ def list_surveys(source_system="NSV"):
             cur.execute(sql.SQL("SELECT * FROM {}.{} WHERE ").format(sql.Identifier(s_schema), sql.Identifier(SCHEDULE_TABLE))
                         + sql.SQL(" AND ").join(where))
             schedules = _rows(cur)
+            lookups = load_lookups(cur, s_schema)
+            for row in schedules:
+                enrich(row, lookups)
             cur.execute(sql.SQL("SELECT * FROM {}.{} WHERE survey_schedule_id IS NOT NULL").format(
                 sql.Identifier(r_schema), sql.Identifier(REPORT_TABLE)))
             reports = {}
@@ -230,8 +278,10 @@ def fingerprint(schedule, reports):
 def survey_details(schedule, found=None):
     """The values the pipeline needs, from the schedule row (zone always UNKNOWN unless a zone column exists)."""
     found = found or {}
+    zone = _clean("zone", schedule.get("_zone_code")) or found.get("zone") or UNKNOWN_ZONE
     return {"survey_id": schedule.get("id"), "upc": found.get("upc") or _clean("upc", schedule.get("upc")),
-            "zone": found.get("zone") or UNKNOWN_ZONE,
+            "zone": zone, "zone_name": schedule.get("_zone_name"), "zone_from": schedule.get("_zone_source"),
+            "ro": schedule.get("_ro_name"), "state": schedule.get("_state_name"), "piu": schedule.get("_piu_name"),
             "phase": found.get("phase") or _clean("phase", schedule.get("survey_phase")),
             "cycle": found.get("cycle") or _clean("cycle", schedule.get("survey_cycle")),
             "project_name": schedule.get("project_name"), "schedule_name": schedule.get("schedule_name")}
@@ -278,7 +328,8 @@ def extract(result):
             cells = {}
             for k, v in row.items():
                 _flatten(k, v, cells)
-            flat += [(f"{table}.{k}", k.split(".")[-1].split("[")[0].lower(), v) for k, v in cells.items()]
+            flat += [(f"{table}.{k}", k.split(".")[-1].split("[")[0].lower(), v) for k, v in cells.items()
+                     if not k.startswith("_")]
     found, where = {}, {}
     for field, names in FIELDS.items():
         for name in names:
@@ -316,7 +367,10 @@ def main(args):
     for row in r["reports"][:5]:
         print(json.dumps(row, indent=2, ensure_ascii=False, default=str))
     print("\nfound:")
-    for f in FIELDS:
+    if r["details"].get("zone_from"):
+        print(f"  zone   = {r['details']['zone']:20} <- master_zone.zone_code via {r['details']['zone_from']} "
+              f"({r['details'].get('zone_name')})")
+    for f in [f for f in FIELDS if not (f == "zone" and r["details"].get("zone_from"))]:
         print(f"  {f:6} = {r['found'].get(f) or '-':20} {('<- ' + r['found_in'][f]) if f in r['found_in'] else '(not found - add its column name to FIELDS)'}")
     print(f"\npipeline values: {r['details']}")
     print("ready to process: " + ("YES" if r["eligible"] else "NO - " + "; ".join(r["not_eligible_because"])))
