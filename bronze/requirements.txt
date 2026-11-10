@@ -1,0 +1,9 @@
+# tested with: Python 3.10 / pandas 2.3 / pyarrow 24 / pyogrio 0.13 / shapely 2.1
+pandas>=2.0
+openpyxl>=3.1
+pyarrow>=14
+pyogrio>=0.7         # D3: shapefiles + GeoPackages (GDAL bundled in the wheel)
+shapely>=2.0         # D3: geometry -> WKT
+Pillow>=9.0          # D4 images (EXIF)
+pytesseract>=0.3     # D4 image text - also needs the tesseract program (settings.py)
+boto3>=1.28          # WFM reports on S3

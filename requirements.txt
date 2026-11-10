@@ -1,0 +1,12 @@
+# bronze + silver + gold (tested with Python 3.10, pandas 2.3, pyarrow 24)
+pandas>=2.2
+numpy>=1.24
+pyarrow>=14
+openpyxl>=3.1
+xlsxwriter>=3.0      # silver .xlsx output (only with Excel output on)
+python-dotenv        # gold .env files
+pyogrio>=0.7         # bronze D3: shapefiles + GeoPackages
+shapely>=2.0         # bronze D3: geometry -> WKT
+Pillow>=9.0          # bronze D4 images
+pytesseract>=0.3     # bronze D4 image text - also needs the tesseract program
+boto3>=1.28          # S3: WFM reports in, --output-s3 out

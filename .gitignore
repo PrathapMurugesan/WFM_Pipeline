@@ -1,0 +1,27 @@
+# --- Data (lives in S3 / local disk, never in git) ---
+NSV Data New/
+output/
+bronze/data/
+gold/Input_silver_data_new/*
+!gold/Input_silver_data_new/.gitkeep
+gold/Output_KPI_data/*
+!gold/Output_KPI_data/.gitkeep
+project_master.xlsx
+NSV_Activity_Tracker*.xls*
+*.parquet
+~$*
+logs/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.claude/
