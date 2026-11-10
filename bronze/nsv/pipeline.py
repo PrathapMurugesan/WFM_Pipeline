@@ -544,7 +544,12 @@ def extract_image_folders(run, folder, image_folders, files=None, location=None)
 
         def make_job(path):
             rel = PurePosixPath(path).relative_to(base)
-            return (settings.INPUT.full_path(path), settings.INPUT.read_bytes(path),
+            try:
+                data = settings.INPUT.read_bytes(path)
+            except Exception as e:                       # e.g. a damaged zip entry: listed as unreadable_file
+                logger.error(f"[{group}] cannot read '{rel}': {type(e).__name__}: {e}")
+                data = b""
+            return (settings.INPUT.full_path(path), data,
                     lane_from_path(rel.parts[1:-1]) or lane_from_name(rel.name), rel.parts[0], cfg)
 
         def progress(done, total):

@@ -31,8 +31,22 @@ logger = get_logger("nsv.ingest")
 
 
 def run(survey, dkey):
-    cfg = schema.deliverable(dkey)
+    """One deliverable. A crash is logged, the manifest + run log are still written (status 'crashed')."""
     run = Run(dkey, survey)
+    try:
+        return _run(run, survey, dkey)
+    except Exception as e:
+        logger.exception(f"[{survey.label}] {dkey}: crashed - what was saved so far is kept")
+        run.manifest["error"] = f"{type(e).__name__}: {e}"
+        try:
+            write_inventory(run, run.input_folder)
+        except Exception:
+            pass
+        return run.finish(status="crashed")
+
+
+def _run(run, survey, dkey):
+    cfg = schema.deliverable(dkey)
     s = schema.load()
     run.manifest["schema"] = {"file": settings.SCHEMA_FILE.name, "name": s.get("schema_name"),
                               "version": s.get("schema_version"),

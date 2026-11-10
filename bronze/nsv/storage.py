@@ -164,7 +164,7 @@ class ReportStorage:
                 rel = name.split("/", 1)[1] if strip else name
                 rel = PurePosixPath(rel)
                 path = f"{base}/{(rel.parent / split_upload_name(rel.name)[0]).as_posix()}".replace("/./", "/")
-                self._files[path] = (raw, info.filename)
+                self._files[path] = (raw, info)
                 self._stamps[path], self._sizes[path] = stamp, info.file_size
             self._open_zips[raw] = zf
             self.zips.append({"zip": clean, "uploaded": raw, "files": len(keep), "folder": base,
@@ -176,8 +176,17 @@ class ReportStorage:
     def _read(self, path):
         entry = self._files[path]
         if isinstance(entry, tuple):                              # inside a zip
-            raw, member = entry
-            return self._open_zips[raw].read(member)
+            raw, info = entry
+            try:
+                return self._open_zips[raw].read(info)
+            except zipfile.BadZipFile as e:
+                # Some zip tools write archives whose entries overlap; newer Pythons refuse them as a possible
+                # 'zip bomb'. The size is checked when the zip is opened, so read the entry without that check.
+                if "Overlapped" not in str(e) or not hasattr(info, "_end_offset"):
+                    raise
+                info._end_offset = None
+                self.zip_warnings = getattr(self, "zip_warnings", 0) + 1
+                return self._open_zips[raw].read(info)
         return self._read_raw(entry)
 
     # ---- common API ----
@@ -195,7 +204,7 @@ class ReportStorage:
         """The file name as uploaded (with the timestamp prefix); inside a zip: '<zip as uploaded>!<entry>'."""
         entry = self._files[path]
         if isinstance(entry, tuple):
-            return f"{PurePosixPath(entry[0]).name}!{entry[1]}"
+            return f"{PurePosixPath(entry[0]).name}!{entry[1].filename}"
         return PurePosixPath(entry).name
 
     def uploaded_at(self, path):
@@ -222,7 +231,7 @@ class LocalReportStorage(ReportStorage):
     def full_path(self, path):
         entry = self._files[path]
         if isinstance(entry, tuple):
-            return f"{str(self.root / entry[0]).removeprefix(chr(92) * 2 + '?' + chr(92))}!{entry[1]}"
+            return f"{str(self.root / entry[0]).removeprefix(chr(92) * 2 + '?' + chr(92))}!{entry[1].filename}"
         return str(self.root / entry).removeprefix("\\\\?\\")
 
 
@@ -263,5 +272,5 @@ class S3ReportStorage(ReportStorage):
     def full_path(self, path):
         entry = self._files[path]
         if isinstance(entry, tuple):
-            return f"s3://{self.bucket}/{self.prefix}{entry[0]}!{entry[1]}"
+            return f"s3://{self.bucket}/{self.prefix}{entry[0]}!{entry[1].filename}"
         return f"s3://{self.bucket}/{self.prefix}{entry}"

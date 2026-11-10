@@ -207,6 +207,8 @@ def main(args):
             results.append({**row, "status": manifest["status"], "run_id": manifest["run_id"],
                             "output": manifest["output"], "summary": manifest["summary"]})
             report += report_rows(survey, name, manifest["status"], manifest)
+            if manifest["status"] == "crashed":
+                report += report_rows(survey, name, "crashed", error=manifest.get("error"))
         except Exception as e:
             logger.exception(f"[{survey.label}] {name}: crashed")
             results.append({**row, "status": "crashed", "error": str(e)})

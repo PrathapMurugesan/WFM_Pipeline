@@ -122,10 +122,50 @@ def _below(files, folder):
 # =============================================================================
 # Extraction
 # =============================================================================
+STD_TOKEN = {"irc": re.compile(r"(?<![a-z])irc(?![a-z])"), "ca": re.compile(r"(?<![a-z])ca(?![a-z])")}
+
+
+def _flat_standard(files, folder, gis_cfg):
+    """
+    Vendors sometimes leave out the 'GIS Mapping -As Per CA / -As per IRC' level and put 'GIS Shape Files' /
+    'GPKG Files' straight into D3 - then only ONE standard was delivered. Which one, from the data:
+      column headers of the shapefiles' companion csv files ('Condition_IRC', 'Cracking_CA', 'CA Condition')
+      + a Potholes layer (only IRC has one). Returns (standard, reason) or (None, reason); never a guess on a tie.
+    """
+    if any(_sub_folder(files, folder, std["folder_names"]) for std in gis_cfg.values()):
+        return None, None
+    containers = sorted({n for std in gis_cfg.values() for part in ("shapefiles", "gpkg")
+                         for n in std.get(part, {}).get("folder_names", [])})
+    if not _sub_folder(files, folder, containers):
+        return None, None
+    score = {"irc": 0, "ca": 0}
+    for p in files:
+        if p.lower().endswith(".csv"):
+            try:
+                header = settings.INPUT.read_bytes(p).split(b"\n", 1)[0].decode("utf-8", "replace").lower()
+            except Exception:
+                continue
+            for std, rx in STD_TOKEN.items():
+                score[std] += len(rx.findall(header.replace("_", " ")))
+        if re.search(r"pothole", PurePosixPath(p).parent.name, re.I) and p.lower().endswith(".shp"):
+            score["irc"] += 1
+    reason = f"flat D3 layout (no 'GIS Mapping -As Per CA/IRC' folder); evidence IRC {score['irc']} vs CA {score['ca']}"
+    if score["irc"] == score["ca"]:
+        return None, reason + " - undecided"
+    return ("irc" if score["irc"] > score["ca"] else "ca"), reason
+
+
 def extract_gis(run, folder, gis_cfg):
     files = settings.INPUT.list_files(folder)
+    flat_std, flat_reason = _flat_standard(files, folder, gis_cfg)
+    if flat_reason:
+        run.manifest["gis_layout"] = {"flat": True, "standard": flat_std, "reason": flat_reason}
+        (logger.warning if flat_std else logger.error)(
+            f"[gis] {flat_reason} -> " + (f"read as '{flat_std}'" if flat_std else "not read"))
     for std_key, std in gis_cfg.items():
         std_folder = _sub_folder(files, folder, std["folder_names"])
+        if not std_folder and std_key == flat_std:
+            std_folder = folder.strip("/")                 # the shapefile / GPKG folders sit directly in D3
         meta = {"schema": {}, "profile": {}}
         if not std_folder:
             for kind, items in (("shp", std.get("shapefiles", {}).get("layers", {})),
