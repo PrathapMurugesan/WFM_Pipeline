@@ -194,7 +194,12 @@ def _failing_lanes_checks(prj, tables, summary, mism):
             if not flc:
                 continue
             ric = names.get(f'current cycle | {val_grp} | reporting interval')
-            iv = num(d2[ric]) if ric else pd.Series(100.0, index=d2.index)
+            if ric:
+                iv = num(d2[ric])
+            else:                               # no interval column (D2 'Flexible - Comparison as per CA'):
+                end_c = pick(c, 'chainage', 'end')   # the length of D2's own rows, 100 when it has none
+                ln = (parse_chainage(d2[end_c]) - st).abs().round() if end_c else pd.Series(np.nan, index=d2.index)
+                iv = ln.where(ln > 0, 100.0).where(st.notna())
             rows = iv.notna()
             if not rows.any():
                 summary.append({**_row('failing_lanes', std, defect, '-', '-', 0, 0, 0),
@@ -321,7 +326,10 @@ def _value_and_breach_lanes(prj, tables, summary, mism, lanes, reversed_lanes):
                 ref = pd.DataFrame({'ch': st, 'len': blk_len, 'd2': val}).dropna(subset=['ch', 'd2'])
                 if ref.empty:
                     continue
-                ri = num(d2[ric]).dropna() if ric else pd.Series([100])
+                ri = num(d2[ric]).dropna() if ric else pd.Series(dtype=float)
+                if ri.empty:                    # no interval column / no value (e.g. D2 'Flexible - Comparison as
+                    ln = blk_len[ref.index].round()   # per CA'): the length of D2's own rows (1 km rows -> 1000)
+                    ri = ln[ln > 0] if (ln > 0).any() else pd.Series([100])
                 gi = _d2_interval(ri)           # D2's own interval (50, 100, 1000 …)
                 g = 1000 if gi >= 1000 else 100
                 crack100 = defect == 'cracking' and gi < 1000 and gi % 10 == 0

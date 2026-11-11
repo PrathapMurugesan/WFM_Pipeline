@@ -8674,7 +8674,8 @@
                   },
                   "roughness": {
                     "keywords": [
-                      "rough"
+                      "rough",
+                      "iri"
                     ],
                     "required": true,
                     "fields": [
@@ -9488,7 +9489,8 @@
                   },
                   "roughness": {
                     "keywords": [
-                      "rough"
+                      "rough",
+                      "iri"
                     ],
                     "required": true,
                     "fields": [
