@@ -346,7 +346,7 @@ def _in_db(cur, schema, table, cols, wanted, skip=None):
     return {tuple(r) for r in cur.fetchall()} & wanted
 
 
-def resolve_foreign_keys(cur, schema, plans, full, delete=True, log=print):
+def resolve_foreign_keys(cur, schema, plans, full, delete=True, log=print, null_unmatched=False):
     """Adds the referenced rows of our own tables (from full = silver dlm_kpi frames) and returns the write order
     (referenced tables first). A reference that is neither pushed, in the database nor in silver blocks the table."""
     ours = {p["target"].split(".", 1)[1]: t for t, p in plans.items() if p["exists"]}
@@ -388,6 +388,23 @@ def resolve_foreign_keys(cur, schema, plans, full, delete=True, log=print):
                     p["fk_missing"].pop(name, None)
         if not changed:
             break
+    if null_unmatched:                       # the reference column set to NULL where the referenced row is nowhere
+        for t, p in plans.items():
+            for name, (cols, ref, rcols, n, sample) in list(p.get("fk_missing", {}).items()):
+                target = p["target"].split(".", 1)[1]
+                cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND "
+                            "table_name = %s AND is_nullable = 'YES'", (schema, target))
+                nullable = {r[0] for r in cur.fetchall()}
+                if not set(cols) <= nullable:
+                    continue                 # NOT NULL column: stays blocked
+                bad = [tuple(_as_text(v) for v in row) for row in p["frame"][cols].itertuples(index=False, name=None)]
+                missing = {k for k in bad if None not in k} - _in_db(cur, schema, ref, rcols, {k for k in bad if None not in k})
+                mask = [k in missing for k in bad]
+                frame = p["frame"].copy()
+                frame.loc[mask, cols] = None
+                p["frame"] = frame
+                p.setdefault("fk_nulled", {})[name] = (cols, ref, rcols, int(sum(mask)), sample)
+                p["fk_missing"].pop(name)
     for p in plans.values():
         if p.get("fk_missing"):
             p["blocked"] = True
@@ -463,7 +480,8 @@ def add_gold_ids(cur, schema, frames, survey_id, upc, log=print):
 
 
 # =============================================================================
-def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None, skip=()):
+def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None, skip=(),
+                null_unmatched=False):
     silver, gold, e = survey_folders(survey_id, output)
     log(f"\n==================== {survey_id}  UPC {e['upc']}  zone {e['zone']}  phase {e['phase']}  "
         f"cycle {e['cycle']}  ({e.get('status')})")
@@ -483,7 +501,8 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
             if any(t in GOLD_TABLES for t in frames):
                 add_gold_ids(cur, schema, frames, survey_id, e["upc"], log)
             plans = {t: plan(cur, schema, t, df, table_map) for t, df in frames.items()}
-            order = resolve_foreign_keys(cur, schema, plans, load_full(silver) if only != "gold" else {}, delete, log)
+            order = resolve_foreign_keys(cur, schema, plans, load_full(silver) if only != "gold" else {}, delete, log,
+                                         null_unmatched=null_unmatched)
             for t, p in plans.items():
                 if not p["exists"]:
                     log(f"  {t:30} -> {p['target']:45} TABLE NOT FOUND - skipped"
@@ -507,6 +526,10 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
                         "earlier rows cannot be told apart (a delete by upc alone would hit other cycles)")
                 if p.get("fk_added"):
                     log(f"      + {p['fk_added']} parent row(s) added from silver dlm_kpi (referenced by child rows)")
+                for name, (cols, ref, rcols, n, sample) in p.get("fk_nulled", {}).items():
+                    log(f"      FOREIGN KEY {name}: {cols} set to NULL on {n} row(s) - the referenced {ref}{rcols} "
+                        f"does not exist (e.g. {sample[:1]}); upc / lane / parent_start_chainage / parent_end_chainage "
+                        f"still identify the parent window")
                 for name, (cols, ref, rcols, n, sample) in p.get("fk_missing", {}).items():
                     log(f"      FOREIGN KEY {name}: {cols} -> {ref}{rcols}: {n} value(s) found nowhere "
                         f"(not pushed, not in the database, not in silver) e.g. {sample}")
@@ -543,12 +566,15 @@ def main(args):
     ap.add_argument("--output", default=str(ROOT / "output"))
     ap.add_argument("--only", choices=["silver", "gold"], help="push only the silver or only the gold tables")
     ap.add_argument("--skip", nargs="*", default=[], help="pipeline tables to leave out, e.g. master_rutting_child_10m")
+    ap.add_argument("--null-unmatched-fk", action="store_true",
+                    help="set a foreign-key column to NULL where the referenced row exists nowhere (nullable columns only)")
     o = ap.parse_args(args)
     table_map = dict(m.split("=", 1) for m in o.map)
     failed = 0
     for sid in o.survey:
         try:
-            push_survey(sid, o.output, o.schema, table_map, o.write, not o.no_delete, only=o.only, skip=o.skip)
+            push_survey(sid, o.output, o.schema, table_map, o.write, not o.no_delete, only=o.only, skip=o.skip,
+                        null_unmatched=o.null_unmatched_fk)
         except Exception as e:
             failed += 1
             print(f"  ERROR {sid}: {type(e).__name__}: {e}")
