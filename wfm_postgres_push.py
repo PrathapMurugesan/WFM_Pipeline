@@ -63,13 +63,37 @@ def apply_value_map(table, df, log=print):
 # =============================================================================
 # The survey's tables
 # =============================================================================
+def survey_info(survey_id, out):
+    """upc / zone / phase / cycle (+ status, run_date) of a survey: the processed log (local, else its S3 copy),
+    else output/metadata/<survey id>.json (saved by every run), else a Postgres lookup."""
+    f = out / "state" / "wfm_trigger_state.json"
+    state = json.loads(f.read_text(encoding="utf-8")) if f.is_file() else {}
+    s3 = os.environ.get("NSV_OUTPUT_S3")
+    if survey_id not in state and s3:
+        try:
+            import boto3
+            bucket, _, key = f"{s3.rstrip('/')}/state/wfm_trigger_state.json"[5:].partition("/")
+            state = json.loads(boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read())
+        except Exception:
+            state = {}
+    if state.get(survey_id, {}).get("upc"):
+        return {**state[survey_id], "from": "processed log"}
+    m = out / "metadata" / f"{survey_id}.json"
+    if m.is_file():
+        d = json.loads(m.read_text(encoding="utf-8")).get("details") or {}
+        if d.get("upc") and d.get("phase"):
+            return {**d, "status": "-", "from": str(m)}
+    import wfm_metadata
+    d = wfm_metadata.lookup(survey_id)["details"]
+    if not d.get("upc"):
+        raise RuntimeError(f"{survey_id}: not in the processed log, no metadata file and not found in Postgres")
+    return {**d, "status": "-", "from": "Postgres"}
+
+
 def survey_folders(survey_id, output):
-    """(silver run_date folder, gold run_date folder, entry) from the processed log."""
+    """(silver run_date folder, gold run_date folder, entry) - the run_date of the processed log, else the latest."""
     out = Path(output)
-    state = json.loads((out / "state" / "wfm_trigger_state.json").read_text(encoding="utf-8"))
-    e = state.get(survey_id)
-    if not e:
-        raise RuntimeError(f"{survey_id} is not in the processed log {out / 'state'}")
+    e = survey_info(survey_id, out)
     part = f"zone={str(e['zone']).upper()}/phase={e['phase']}/cycle={e['cycle']}/{e['upc'].replace('/', '-')}"
     runs = sorted((out / "silver" / part).glob("run_date=*"))
     if not runs:
