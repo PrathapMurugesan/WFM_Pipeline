@@ -478,11 +478,11 @@ def _run(args, ctx):
             problems.append(f"wfm ids: no metadata/{o.report_id}.json - survey_id / project_id / piu_id ... not in silver")
 
     # ---------------------------------------------------------------- POSTGRES PUSH (not active yet)
-    # Loads silver dlm_postgres/ + gold tables into the WFM Postgres (wfm_postgres_push.py). Switch on later:
-    # if "gold" in layers:
+    # Appends silver dlm_postgres/ + gold to the EXISTING WFM Postgres tables (wfm_postgres_push.py). Switch on later:
+    # if "gold" in layers and o.report_id:
     #     import wfm_postgres_push
     #     try:
-    #         wfm_postgres_push.push(silver_dir, gold_dir, o.upc or upc.replace("-", "/"), o.phase, o.cycle, log=log)
+    #         wfm_postgres_push.push_survey(o.report_id, out, wfm_postgres_push.TARGET_SCHEMA, {}, True, True, log=log)
     #     except Exception as e:
     #         problems.append(f"postgres push: {type(e).__name__}: {e}")
 
