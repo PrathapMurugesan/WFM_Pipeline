@@ -31,7 +31,9 @@ from pathlib import Path
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parent
-TARGET_SCHEMA = os.environ.get("NSV_PG_TARGET_SCHEMA", "dlm")
+TARGET_SCHEMA = os.environ.get("NSV_PG_TARGET_SCHEMA", "public")
+# pipeline table -> DHMS table, where the names differ (--map adds to / overrides this)
+DEFAULT_TABLE_MAP = {"ris_trends_dw": "ris_trends_kpi", "ris_view_dw": "ris_view_kpi"}
 SILVER_TABLES = ["master_rutting_child_10m", "master_rutting_child_100m", "master_rutting_parent",
                  "master_roughness_child_10m", "master_roughness_child_100m", "master_roughness_parent",
                  "master_ravelling_child_10m", "master_ravelling_child_100m", "master_ravelling_parent",
@@ -506,8 +508,11 @@ def add_gold_ids(cur, schema, frames, survey_id, upc, log=print):
 
 # =============================================================================
 def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None, skip=(),
-                null_unmatched=False, all_rows=ALL_ROWS_DEFECTS):
-    silver, gold, e = survey_folders(survey_id, output)
+                null_unmatched=False, all_rows=ALL_ROWS_DEFECTS, folders=None):
+    """folders = (silver run_date folder, gold run_date folder, {'upc', 'zone', 'phase', 'cycle'}) when the caller
+    knows them (run_pipeline.py); else found from the processed log / metadata."""
+    table_map = {**DEFAULT_TABLE_MAP, **(table_map or {})}
+    silver, gold, e = folders or survey_folders(survey_id, output)
     log(f"\n==================== {survey_id}  UPC {e['upc']}  zone {e['zone']}  phase {e['phase']}  "
         f"cycle {e['cycle']}  ({e.get('status')})")
     log(f"  silver {silver}\n  gold   {gold}")

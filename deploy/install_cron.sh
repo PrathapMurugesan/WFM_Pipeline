@@ -6,6 +6,7 @@
 #   ./deploy/install_cron.sh 15                       every 15 minutes
 #   ./deploy/install_cron.sh --daily-ist 00:30        once a day at 00:30 IST (converted to the server's time zone)
 #   OUTPUT_S3=s3://bucket/NSV_Pipeline PROJECT_MASTER=s3://.../project_master.xlsx ./deploy/install_cron.sh
+#   PG_PUSH=1 ...                                     also push every processed survey to the DHMS Postgres
 #   ./deploy/install_cron.sh --remove                 take the job out again
 #
 # The job runs wfm_trigger.py under flock, so a run that is still busy is never started twice.
@@ -44,6 +45,7 @@ fi
 ARGS=""
 [[ -n "${OUTPUT_S3:-}" ]] && ARGS="$ARGS --output-s3 $OUTPUT_S3"
 [[ -n "${PROJECT_MASTER:-}" ]] && ARGS="$ARGS --project-master $PROJECT_MASTER"
+[[ "${PG_PUSH:-}" == "1" ]] && ARGS="$ARGS --pg-push"
 mkdir -p "$REPO/output/logs"
 
 LINE="$SCHEDULE cd '$REPO' && flock -n /tmp/wfm_trigger.lock '$PYTHON' wfm_trigger.py$ARGS >> '$REPO'/output/logs/trigger_\$(date +\\%Y\\%m\\%d).log 2>&1 $TAG"

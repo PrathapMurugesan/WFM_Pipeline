@@ -126,8 +126,16 @@ The cron job picks up the new code on its next run.
 | `failed` (1) | a step could not run – retried on the next trigger (max 3), then left for `--survey <id> --force` |
 | `not_ready` (3) | not Final Approved (only with `run_pipeline.py` directly) |
 
-## Not active yet
-- **Postgres push** (`wfm_postgres_push.py`): the call is commented out in `run_pipeline.py` ("POSTGRES PUSH").
-  Before the push `ris_view_dw.Status` is mapped `Open` -> `open`, `Closed` -> `close` (PG enum `ris_view_kpi_status`;
-  `STAGING_VALUE_MAP` in `wfm_postgres_push.py`).
-  Dry run: `.venv/bin/python wfm_postgres_push.py <silver run_date folder> <gold run_date folder> --upc <UPC> --phase <p> --cycle <c> --dry-run`
+## Postgres push (DHMS tables)
+Every processed survey is appended to the DHMS Postgres when the cron job has `--pg-push`
+(install with `PG_PUSH=1 ... ./deploy/install_cron.sh --daily-ist 00:30`). By hand:
+```bash
+.venv/bin/python wfm_postgres_push.py --survey <id> [<id> ...] --null-unmatched-fk            # inspect (writes nothing)
+.venv/bin/python wfm_postgres_push.py --survey <id> [<id> ...] --null-unmatched-fk --write    # append
+```
+- schema `public` (env `NSV_PG_TARGET_SCHEMA`), gold -> `ris_trends_kpi` / `ris_view_kpi`, `ris_view` Status `open` / `close`
+- rutting + roughness: all rows; cracking / pothole / ravelling: breach rows only
+- this survey's earlier rows are replaced (survey_id for gold, upc + phase + cycle for silver), all other rows untouched
+- `fk_rutting_c10_parent` / `c100`: rutting children get `parent_id` NULL (the FK references `defect_id`, which only breached
+  parents have); upc / lane / parent_start_chainage / parent_end_chainage keep the link
+- one transaction per survey; the result is in the run's `pipeline.log` and `run_summary.json` (`pg_push`)

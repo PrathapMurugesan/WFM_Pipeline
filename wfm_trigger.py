@@ -134,7 +134,7 @@ def run_survey(survey, details, o, out):
     for flag in ("output_s3", "project_master", "tracker"):
         if getattr(o, flag):
             cmd += [f"--{flag.replace('_', '-')}", getattr(o, flag)]
-    cmd += [f for f, on in (("--no-cdn", o.no_cdn), ("--cdn-dry-run", o.cdn_dry_run)) if on]
+    cmd += [f for f, on in (("--no-cdn", o.no_cdn), ("--cdn-dry-run", o.cdn_dry_run), ("--pg-push", o.pg_push)) if on]
     log(f"  RUN  {' '.join(cmd[1:])}")
     return subprocess.call(cmd, cwd=ROOT, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
@@ -155,6 +155,8 @@ def main(args):
                     help="gold ris_view (default: env NSV_PROJECT_MASTER)")
     ap.add_argument("--tracker")
     ap.add_argument("--no-cdn", action="store_true")
+    ap.add_argument("--pg-push", action="store_true", default=os.environ.get("NSV_PG_PUSH", "") == "1",
+                    help="also append each survey's silver + gold to the DHMS Postgres (env NSV_PG_PUSH=1)")
     ap.add_argument("--cdn-dry-run", action="store_true")
     o = ap.parse_args(args)
     if o.force and not o.survey:

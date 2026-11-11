@@ -23,7 +23,7 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
       --strict                               stop when bronze has problems or a silver DQ check fails
 
 Steps: MIGRATE (copy to --stage-s3, unzip, no videos) -> BRONZE (reads the migrated copy) -> SILVER ->
-       IMAGES -> CDN (image_url = CDN link per row) -> GOLD -> [POSTGRES PUSH: written, not active] -> upload + logs
+       IMAGES -> CDN (image_url = CDN link per row) -> GOLD -> [POSTGRES PUSH with --pg-push] -> upload + logs
 Input: settings.REPORTS_S3_ROOT of the bronze module (s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/)
        <report id>/D1..D4/<upload timestamp>-<file name>
 Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when those are given):
@@ -205,7 +205,7 @@ def collect_logs(ctx, code):
     if ctx.get("silver_dir"):
         take(ctx["silver_dir"] / "dq" / "cdn_images.csv", "cdn_images.csv")
     summary = {"exit_code": code, "survey_id": o.report_id, "upc": o.upc, "part": part, "run": ctx["stamp"],
-               "migrated_to": ctx.get("location"), "cdn": ctx.get("cdn"),
+               "migrated_to": ctx.get("location"), "cdn": ctx.get("cdn"), "pg_push": ctx.get("pg_push"),
                "run_date": o.run_date, "folders": {k: str(ctx[k]) for k in ("bronze_dir", "silver_dir", "gold_dir") if ctx.get(k)},
                "files": copied}
     (dest / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -260,6 +260,8 @@ def _run(args, ctx):
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-db", action="store_true", help="do not look up zone/phase/cycle/UPC in Postgres")
     ap.add_argument("--no-status-db", action="store_true", help="gold: no defect status from Postgres (all Open)")
+    ap.add_argument("--pg-push", action="store_true", default=os.environ.get("NSV_PG_PUSH", "") == "1",
+                    help="append silver + gold to the DHMS Postgres after gold (wfm_postgres_push.py; env NSV_PG_PUSH=1)")
     ap.add_argument("--stage-s3", default=os.environ.get("NSV_STAGE_S3", "s3://dhms-new-stgae/NSV_Pipeline/wfm_reports"),
                     help="where the survey is migrated to (unzipped, no videos) before bronze")
     ap.add_argument("--no-migrate", action="store_true", help="bronze reads the source directly (no copy / unzip)")
@@ -477,14 +479,23 @@ def _run(args, ctx):
         else:
             problems.append(f"wfm ids: no metadata/{o.report_id}.json - survey_id / project_id / piu_id ... not in silver")
 
-    # ---------------------------------------------------------------- POSTGRES PUSH (not active yet)
-    # Appends silver dlm_postgres/ + gold to the EXISTING WFM Postgres tables (wfm_postgres_push.py). Switch on later:
-    # if "gold" in layers and o.report_id:
-    #     import wfm_postgres_push
-    #     try:
-    #         wfm_postgres_push.push_survey(o.report_id, out, wfm_postgres_push.TARGET_SCHEMA, {}, True, True, log=log)
-    #     except Exception as e:
-    #         problems.append(f"postgres push: {type(e).__name__}: {e}")
+    # ---------------------------------------------------------------- POSTGRES PUSH (--pg-push / NSV_PG_PUSH=1)
+    # Appends this survey's silver + gold to the EXISTING DHMS tables (wfm_postgres_push.py): schema
+    # NSV_PG_TARGET_SCHEMA (public), gold -> ris_trends_kpi / ris_view_kpi, rutting + roughness all rows, other
+    # defects breach rows, this survey's earlier rows replaced, rutting child parent_id NULL where the FK rejects it.
+    # One transaction: a failure writes nothing and is a problem of the run (the run itself still finishes).
+    if o.pg_push and "gold" in layers and o.report_id:
+        log("======== POSTGRES PUSH ========")
+        try:
+            import wfm_postgres_push
+            done = wfm_postgres_push.push_survey(
+                o.report_id, out, wfm_postgres_push.TARGET_SCHEMA, {}, True, True, log=log, null_unmatched=True,
+                folders=(silver_dir, gold_dir, {"upc": o.upc or upc.replace("-", "/"), "zone": o.zone,
+                                                "phase": o.phase, "cycle": o.cycle, "status": "this run"}))
+            ctx["pg_push"] = {t: {"deleted": d, "inserted": n} for t, (d, n) in done.items()}
+        except Exception as e:
+            ctx["pg_push"] = {"error": f"{type(e).__name__}: {e}"}
+            problems.append(f"postgres push: {type(e).__name__}: {e} - nothing of this survey written")
 
     # ---------------------------------------------------------------- upload
     if o.output_s3:
