@@ -1,24 +1,21 @@
 """
-wfm_trigger.py - the incremental trigger: process every WFM survey that is ready and new / changed.
+wfm_trigger.py - process every WFM survey that is 'Survey Final Approved' and not processed yet. Run by cron.
 
-Run it on a schedule (cron, see deploy/install_cron.sh), e.g. every 30 minutes:
-    python wfm_trigger.py                      check all surveys, process what is ready and new / changed
-    python wfm_trigger.py --dry-run            only show what would be processed (and why others are not)
+    python wfm_trigger.py                      process every new final-approved survey
+    python wfm_trigger.py --dry-run            only show what would be processed (and why the others are not)
     python wfm_trigger.py --survey <id>        only this survey (still checked against the rules)
-    python wfm_trigger.py --survey <id> --force   process it even if not ready / unchanged
-    options passed on to run_pipeline.py: --output, --output-s3, --project-master, --tracker
+    python wfm_trigger.py --survey <id> --force   process it again / although not final-approved
+    passed on to run_pipeline.py: --output, --output-s3, --project-master, --tracker, --no-cdn, --cdn-dry-run
 
 Each run:
   1. Postgres: every NSV survey (wfm_survey_schedule) + its wfm_report rows                (wfm_metadata.list_surveys)
-  2. ready = D1..D4 reports all approved, nothing locked                                  (wfm_metadata.eligibility)
-  3. S3: the upload must be there - reports/<survey id>/ with the D1..D4 folders         (settings REPORTS_S3_ROOT)
-  4. new or changed? fingerprint = report versions / status / update times + the S3 files (count, newest change);
-     the same fingerprint as the last successful run -> skipped
-  5. run_pipeline.py <survey id> with UPC / zone / phase / cycle from Postgres -> bronze, silver, gold
-     zone from master_zone via nsv_zone_id (UNKNOWN if not found); silver / gold under run_date=<today>
-  6. state: output/state/wfm_trigger_state.json (+ <output-s3>/state/ when --output-s3 is set), one entry per survey:
-     fingerprint, status ok / problems / failed, exit code, run time, attempts. A failed run is retried on the next
-     trigger, up to MAX_ATTEMPTS times per fingerprint.
+  2. picked: current_status 'Survey Final Approved'                                        (wfm_metadata.eligibility)
+  3. processed log: a survey that was processed (ok / problems) is NEVER processed again; a failed one is
+     retried on the next run, up to MAX_ATTEMPTS times
+  4. S3: the upload must be there - nhai-dhms-uat/.../reports/<survey id>/ with D1..D4
+  5. run_pipeline.py: MIGRATE to dhms-new-stgae (unzip, no videos) -> BRONZE -> SILVER -> images to the CDN ->
+     GOLD -> [Postgres push: not active yet] -> results + logs to <output-s3>
+  6. processed log: output/state/wfm_trigger_state.json + processed_surveys.csv, also in <output-s3>/state/
 Exit code: 0 = nothing failed, 1 = at least one survey failed (or the trigger could not run).
 """
 import argparse
@@ -31,7 +28,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bronze"))
-MAX_ATTEMPTS = 3                     # failed runs of the same fingerprint before the survey is left alone
+MAX_ATTEMPTS = 3                     # failed runs of a survey before it is left alone (rerun: --survey <id> --force)
+DONE = ("ok", "problems")            # processed - never picked again
 PIPELINE_STATUS = {0: "ok", 2: "problems", 3: "not_ready", 1: "failed"}
 
 
@@ -67,14 +65,30 @@ class State:
         self.data[survey_id] = {**self.data.get(survey_id, {}), **values}
         self.save()
 
+    CSV_COLUMNS = ["survey_id", "status", "upc", "zone", "phase", "cycle", "project_name", "ro", "state", "piu",
+                   "started_at", "finished_at", "minutes", "exit_code", "attempts", "run_date"]
+
+    def csv_text(self):
+        import csv
+        import io
+        buf = io.StringIO()
+        w = csv.DictWriter(buf, fieldnames=self.CSV_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for sid, v in sorted(self.data.items(), key=lambda kv: str(kv[1].get("started_at") or "")):
+            w.writerow({"survey_id": sid, **v})
+        return buf.getvalue()
+
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self.path)
+        (self.path.parent / "processed_surveys.csv").write_text(self.csv_text(), encoding="utf-8")
         if self.s3:
             bucket, _, key = self.s3[5:].partition("/")
             _s3().put_object(Bucket=bucket, Key=key, Body=json.dumps(self.data, indent=2).encode("utf-8"))
+            _s3().put_object(Bucket=bucket, Key=key.rsplit("/", 1)[0] + "/processed_surveys.csv",
+                             Body=self.csv_text().encode("utf-8"))
 
 
 def _s3():
@@ -117,6 +131,7 @@ def run_survey(survey, details, o, out):
     for flag in ("output_s3", "project_master", "tracker"):
         if getattr(o, flag):
             cmd += [f"--{flag.replace('_', '-')}", getattr(o, flag)]
+    cmd += [f for f, on in (("--no-cdn", o.no_cdn), ("--cdn-dry-run", o.cdn_dry_run)) if on]
     log(f"  RUN  {' '.join(cmd[1:])}")
     return subprocess.call(cmd, cwd=ROOT, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
@@ -126,12 +141,14 @@ def main(args):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--survey", help="only this survey id")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--force", action="store_true", help="with --survey: process even if not ready / unchanged")
+    ap.add_argument("--force", action="store_true", help="with --survey: process again / although not final-approved")
     ap.add_argument("--output", default=str(ROOT / "output"))
     ap.add_argument("--output-s3", default=os.environ.get("NSV_OUTPUT_S3"),
                     help="s3://bucket/prefix (default: env NSV_OUTPUT_S3); state is kept there too")
     ap.add_argument("--project-master")
     ap.add_argument("--tracker")
+    ap.add_argument("--no-cdn", action="store_true")
+    ap.add_argument("--cdn-dry-run", action="store_true")
     o = ap.parse_args(args)
     if o.force and not o.survey:
         ap.error("--force only together with --survey")
@@ -162,6 +179,14 @@ def main(args):
             if o.survey or o.dry_run:
                 log(f"  skip {sid}: not ready - {'; '.join(why)}")
             continue
+        last = state.get(sid)
+        if not o.force and last.get("status") in DONE:
+            counts["already_processed"] = counts.get("already_processed", 0) + 1
+            continue
+        if not o.force and last.get("status") == "failed" and last.get("attempts", 0) >= MAX_ATTEMPTS:
+            counts["gave_up"] = counts.get("gave_up", 0) + 1
+            log(f"  skip {sid}: failed {last['attempts']} times - fix and rerun with --survey {sid} --force")
+            continue
         details = wfm_metadata.survey_details(sched)
         missing = [k for k in ("upc", "phase", "cycle") if not details.get(k)]
         if missing:
@@ -176,25 +201,16 @@ def main(args):
             continue
         if not upload:
             counts["not_in_s3"] = counts.get("not_in_s3", 0) + 1
-            log(f"  skip {sid}: approved, but nothing in S3 yet")
+            log(f"  skip {sid}: final approved, but nothing in S3 yet")
             continue
         fp = wfm_metadata.fingerprint(sched, reports) + f"|s3:{upload['files']}:{upload['newest']}"
-        last = state.get(sid)
-        if not o.force and last.get("fingerprint") == fp:
-            if last.get("status") in ("ok", "problems"):
-                counts["unchanged"] = counts.get("unchanged", 0) + 1
-                continue
-            if last.get("attempts", 0) >= MAX_ATTEMPTS:
-                counts["gave_up"] = counts.get("gave_up", 0) + 1
-                log(f"  skip {sid}: failed {last['attempts']} times on this version - fix and rerun with --survey {sid} --force")
-                continue
-        reason = "forced" if o.force else ("new" if not last else "changed" if last.get("fingerprint") != fp else "retry")
+        reason = "forced" if o.force else ("retry" if last.get("status") == "failed" else "new")
         log(f"  {reason.upper():8} {sid}  UPC {details['upc']}  zone {details['zone']}  phase {details['phase']}  cycle {details['cycle']}  "
             f"S3 {upload['files']} file(s) {upload['deliverables']}")
         if o.dry_run:
             counts["would_run"] = counts.get("would_run", 0) + 1
             continue
-        attempts = (last.get("attempts", 0) + 1) if last.get("fingerprint") == fp else 1
+        attempts = (last.get("attempts", 0) + 1) if last.get("status") == "failed" and not o.force else 1
         state.put(sid, status="running", started_at=now(), fingerprint=fp, attempts=attempts, upc=details["upc"])
         started = datetime.now()
         code = run_survey(item, details, o, out)

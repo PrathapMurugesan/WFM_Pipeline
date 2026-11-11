@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Install the WFM trigger as a cron job on the EC2 instance (run once, as the user that owns the repo).
 #
-#   ./deploy/install_cron.sh                          every 30 minutes, output in <repo>/output
+#   ./deploy/install_cron.sh                          every 15 minutes, output in <repo>/output
 #   ./deploy/install_cron.sh 15                       every 15 minutes
 #   OUTPUT_S3=s3://bucket/NSV_Pipeline PROJECT_MASTER=s3://.../project_master.xlsx ./deploy/install_cron.sh
 #   ./deploy/install_cron.sh --remove                 take the job out again
@@ -23,7 +23,7 @@ if [[ "${1:-}" == "--remove" ]]; then
   exit 0
 fi
 
-MINUTES="${1:-30}"
+MINUTES="${1:-15}"
 [[ -x "$PYTHON" ]] || { echo "ERROR: $PYTHON not found - create the venv first (see README)"; exit 2; }
 [[ -f "$REPO/postgres_creds.txt" || -n "${DB_HOST:-}" ]] || echo "WARNING: no $REPO/postgres_creds.txt - the trigger cannot read Postgres"
 

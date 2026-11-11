@@ -25,19 +25,24 @@ s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<report id>/D1/1793260589326-
 
 ## How a survey gets processed
 ```
-wfm_trigger.py  (cron, every 30 min)
-  1. Postgres  wfm_survey_schedule (id = survey id = S3 folder name) + wfm_report (survey_schedule_id)
-  2. ready?    D1, D2, D3, D4 reports approved (current_status APPROVED or approved_at set), is_locked false
-  3. S3        s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<survey id>/D1..D4 there?
-  4. changed?  report versions / status / update times + S3 files vs the last successful run
-  5. run_pipeline.py  bronze -> silver -> gold   (UPC, survey_phase, survey_cycle; zone = master_zone.zone_code via nsv_zone_id)
-  6. state     output/state/wfm_trigger_state.json  (+ <output-s3>/state/)
+wfm_trigger.py  (cron, every 15 min - deploy/install_cron.sh)
+  1. Postgres   wfm_survey_schedule (id = survey id = S3 folder name), current_status = 'Survey Final Approved'
+  2. once only  output/state/wfm_trigger_state.json + processed_surveys.csv (also <output-s3>/state/):
+                a processed survey is never picked again; a failed one is retried (max 3)
+  3. source     s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<survey id>/D1..D4 must be there
+  4. MIGRATE    copy to s3://dhms-new-stgae/NSV_Pipeline/wfm_reports/<survey id>/ - every zip unzipped (damaged
+                zip entries recovered, CRC-checked), upload timestamps removed, videos left out
+                (+ _manifests/<survey id>.json)                                               wfm_migrate.py
+  5. BRONZE     reads the migrated copy -> SILVER
+  6. CDN        every image the silver pothole / cracking tables refer to -> POST
+                https://nhaidhms-stage-api.dic.org.in/defects/images/upload (image + defect_type);
+                image_urls = the CDN links; list in silver dq/cdn_images.csv                  wfm_cdn.py
+  7. GOLD
+  8. POSTGRES   silver dlm_postgres + gold -> the same Postgres: written, NOT active yet    wfm_postgres_push.py
+  9. results + all logs -> s3://dhms-new-stgae/NSV_Pipeline/ ; survey marked processed
 ```
-Zone: `wfm_survey_schedule.nsv_zone_id` -> `master_zone.zone_code` (e.g. `B` = ZONE-B (WEST)); without it via
-`upc_project_zone` (project_id); `UNKNOWN` only when neither gives a zone. RO / state / PIU names come from
-`master_region_zone` / `master_state` / `master_piu` (saved in `output/metadata/<survey id>.json` and the trigger state).
-The rules are at the top of [`wfm_metadata.py`](wfm_metadata.py): `REQUIRED_REPORTS`, `APPROVED_STATUSES`, and the lock checks.
-A failed run is retried on the next trigger, up to 3 times per version.
+Settings (environment): `NSV_OUTPUT_S3` (results), `NSV_STAGE_S3` (migrated copy), `NSV_CDN_BASE_URL` (CDN),
+`NSV_REPORTS_S3_ROOT` (source). The rule is at the top of [`wfm_metadata.py`](wfm_metadata.py) (`FINAL_STATUSES`).
 
 ## Setup on EC2 (Ubuntu, once)
 ```bash
@@ -46,7 +51,7 @@ cd /opt && git clone https://github.com/PrathapMurugesan/WFM_Pipeline.git && cd 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 nano postgres_creds.txt && chmod 600 postgres_creds.txt      # DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_SCHEMA / TARGET_DBS
 .venv/bin/python wfm_trigger.py --dry-run                   # what would be processed, and why the rest is not
-OUTPUT_S3=s3://dhms-new-stgae/NSV_Pipeline ./deploy/install_cron.sh 30   # every 30 min, results uploaded to S3
+OUTPUT_S3=s3://dhms-new-stgae/NSV_Pipeline ./deploy/install_cron.sh 15   # every 15 min, results uploaded to S3
 ```
 The instance's IAM role needs to read `nhai-dhms-uat/wfm_reports/*` (and write to `OUTPUT_S3` if set).
 `postgres_creds.txt` is git-ignored and never committed.

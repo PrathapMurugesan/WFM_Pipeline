@@ -51,11 +51,15 @@ LOOKUPS = {
 }
 
 # ---- when is a survey processed (also used by wfm_trigger.py) ----
-REQUIRED_REPORTS = ["D1", "D2", "D3", "D4"]             # wfm_report.report_type that must all be approved
+# THE rule: wfm_survey_schedule.current_status is one of these (case / spaces ignored)
+FINAL_STATUSES = {"Survey Final Approved"}
+# extra checks, all OFF (the status alone decides); switch on if needed
+CHECK_REPORTS = False                                   # True = D1..D4 wfm_report rows must also be approved
+REQUIRED_REPORTS = ["D1", "D2", "D3", "D4"]
 APPROVED_STATUSES = {"APPROVED", "REPORT_APPROVED"}     # wfm_report.current_status meaning approved ...
 APPROVED_IF_APPROVED_AT = True                          # ... or approved_at is filled
-CHECK_SCHEDULE_LOCK = True                              # wfm_survey_schedule.is_locked must be false
-CHECK_REPORT_LOCK = True                                # wfm_report.is_locked must be false
+CHECK_SCHEDULE_LOCK = False                             # True = wfm_survey_schedule.is_locked must be false
+CHECK_REPORT_LOCK = False                               # True = wfm_report.is_locked must be false
 
 UPC = re.compile(r"\b([A-Z])[/_\- ]?(\d{5})[/_\- ]?(\d{5})[/_\- ]?([A-Z]{2})\b", re.IGNORECASE)
 
@@ -245,6 +249,9 @@ def eligibility(schedule, reports):
     why = []
     if not schedule:
         return False, ["no wfm_survey_schedule row"]
+    norm = lambda t: re.sub(r"\s+", " ", str(t or "")).strip().lower()           # noqa: E731
+    if norm(schedule.get("current_status")) not in {norm(s) for s in FINAL_STATUSES}:
+        why.append(f"status '{schedule.get('current_status')}' (needs {sorted(FINAL_STATUSES)})")
     if CHECK_SCHEDULE_LOCK and _true(schedule.get("is_locked")):
         why.append("survey is locked")
     if "is_active" in schedule and not _true(schedule.get("is_active")):
@@ -256,7 +263,7 @@ def eligibility(schedule, reports):
         t = str(r.get("report_type") or "").upper()
         if t not in by_type or str(r.get("updated_at") or "") > str(by_type[t].get("updated_at") or ""):
             by_type[t] = r
-    for t in REQUIRED_REPORTS:
+    for t in (REQUIRED_REPORTS if CHECK_REPORTS else []):
         r = by_type.get(t)
         if r is None:
             why.append(f"{t}: no report")

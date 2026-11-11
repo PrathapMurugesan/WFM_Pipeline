@@ -21,6 +21,8 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
                                              give --report-id + --upc, or --zone/--phase/--cycle + --upc)
       --strict                               stop when bronze has problems or a silver DQ check fails
 
+Steps: MIGRATE (copy to --stage-s3, unzip, no videos) -> BRONZE (reads the migrated copy) -> SILVER ->
+       IMAGES -> CDN (image_urls = CDN links) -> GOLD -> [POSTGRES PUSH: written, not active] -> upload + logs
 Input: settings.REPORTS_S3_ROOT of the bronze module (s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/)
        <report id>/D1..D4/<upload timestamp>-<file name>
 Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when those are given):
@@ -168,7 +170,11 @@ def collect_logs(ctx, code):
         take(ctx["gold_dir"] / "gold_run.log", "gold_run.log")
     if o.report_id:
         take(out / "metadata" / f"{o.report_id}.json", "metadata.json")
+        take(out / "metadata" / f"{o.report_id}_migration.json", "migration.json")
+    if ctx.get("silver_dir"):
+        take(ctx["silver_dir"] / "dq" / "cdn_images.csv", "cdn_images.csv")
     summary = {"exit_code": code, "survey_id": o.report_id, "upc": o.upc, "part": part, "run": ctx["stamp"],
+               "migrated_to": ctx.get("location"), "cdn": ctx.get("cdn"),
                "run_date": o.run_date, "folders": {k: str(ctx[k]) for k in ("bronze_dir", "silver_dir", "gold_dir") if ctx.get(k)},
                "files": copied}
     (dest / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -222,6 +228,12 @@ def _run(args, ctx):
     ap.add_argument("--only", choices=LAYERS)
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-db", action="store_true", help="do not look up zone/phase/cycle/UPC in Postgres")
+    ap.add_argument("--stage-s3", default=os.environ.get("NSV_STAGE_S3", "s3://dhms-new-stgae/NSV_Pipeline/wfm_reports"),
+                    help="where the survey is migrated to (unzipped, no videos) before bronze")
+    ap.add_argument("--no-migrate", action="store_true", help="bronze reads the source directly (no copy / unzip)")
+    ap.add_argument("--no-cdn", action="store_true", help="do not push the defect images to the CDN")
+    ap.add_argument("--cdn-url", default=os.environ.get("NSV_CDN_BASE_URL", "https://nhaidhms-stage-api.dic.org.in"))
+    ap.add_argument("--cdn-dry-run", action="store_true", help="match the images, upload nothing")
     ap.add_argument("--force", action="store_true", help="process even when the reports are not approved / locked")
     ap.add_argument("--run-date", default=datetime.now().strftime("%Y-%m-%d"),
                     help="silver / gold folder run_date=<date> (default: today)")
@@ -280,8 +292,29 @@ def _run(args, ctx):
         return 1
 
     # ---------------------------------------------------------------- bronze
+    location = o.source
+    if "bronze" in layers and not o.no_migrate:
+        survey_id = o.report_id or Path(str(o.source).rstrip("/")).name
+        log("======== MIGRATE (copy to stage, unzip, no videos) ========")
+        try:
+            import wfm_migrate
+            manifest = wfm_migrate.migrate(o.source, survey_id, o.stage_s3, log=log)
+        except Exception as e:
+            log(f"MIGRATE failed: {type(e).__name__}: {e} - stopped")
+            return 1
+        location = manifest["location"]
+        o.report_id = o.report_id or survey_id
+        ctx["migration"] = manifest
+        mfile = out / "metadata" / f"{survey_id}_migration.json"
+        mfile.parent.mkdir(parents=True, exist_ok=True)
+        mfile.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+        if manifest["unreadable_count"]:
+            problems.append(f"migrate: {manifest['unreadable_count']} file(s) could not be copied (damaged) - "
+                            f"see metadata/{mfile.name}")
+    ctx["location"] = location
+
     if "bronze" in layers:
-        cmd = [sys.executable, "main.py", o.source]
+        cmd = [sys.executable, "main.py", location]
         if zpc:
             cmd += ["--zone", o.zone, "--phase", o.phase, "--cycle", o.cycle]
         if o.report_id:
@@ -329,6 +362,22 @@ def _run(args, ctx):
             if o.strict:
                 return 2
 
+    # ---------------------------------------------------------------- images -> CDN (after silver)
+    if "silver" in layers and not o.no_cdn:
+        cdn_source = location if "bronze" in layers else (
+            f"{o.stage_s3.rstrip('/')}/{o.report_id}" if o.report_id and not o.no_migrate else o.source)
+        log("======== IMAGES -> CDN ========")
+        try:
+            import wfm_cdn
+            cdn = wfm_cdn.push_images(silver_dir, cdn_source, dry_run=o.cdn_dry_run, base_url=o.cdn_url.rstrip("/"), log=log)
+            ctx["cdn"] = cdn
+            if cdn["failed"] or cdn["not_found"]:
+                problems.append(f"cdn: {cdn['failed']} upload(s) failed, {cdn['not_found']} image(s) not found - "
+                                f"see silver/{dated}/dq/cdn_images.csv")
+        except Exception as e:
+            problems.append(f"cdn: {type(e).__name__}: {e}")
+            log(f"CDN step failed: {type(e).__name__}: {e} (silver tables keep their image paths)")
+
     # ---------------------------------------------------------------- gold
     if "gold" in layers:
         kpi = silver_dir / "dlm_kpi"
@@ -350,6 +399,15 @@ def _run(args, ctx):
         if run(log, "GOLD (RIS KPI)", cmd, GOLD, env=env, out_file=gold_dir / "gold_run.log") != 0:
             log("GOLD failed")
             return 1
+
+    # ---------------------------------------------------------------- POSTGRES PUSH (not active yet)
+    # Loads silver dlm_postgres/ + gold tables into the WFM Postgres (wfm_postgres_push.py). Switch on later:
+    # if "gold" in layers:
+    #     import wfm_postgres_push
+    #     try:
+    #         wfm_postgres_push.push(silver_dir, gold_dir, o.upc or upc.replace("-", "/"), o.phase, o.cycle, log=log)
+    #     except Exception as e:
+    #         problems.append(f"postgres push: {type(e).__name__}: {e}")
 
     # ---------------------------------------------------------------- upload
     if o.output_s3:
