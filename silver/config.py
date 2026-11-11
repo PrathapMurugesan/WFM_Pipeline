@@ -81,6 +81,11 @@ D4_VC_NUMBER_LABELS = {5: 'Very Good', 4: 'Good', 3: 'Fair', 2: 'Poor', 1: 'Very
 #   A D4 lane is used only when at least this share of the D4 rows has a value in that lane
 #   (a lane with a few stray cells, e.g. 1 value in 2,810 rows, is skipped with a warning).
 MIN_LANE_FILL = 0.01
+#   Coordinates must lie in India: a latitude / longitude pair outside these bounds (e.g. latitude and longitude
+#   swapped, or a vendor column shifted by one) is set blank - both values of the pair - and counted in the run log
+#   and in dq/geo_checks.csv. Never moved or repaired.
+LAT_RANGE = (6.0, 37.5)
+LON_RANGE = (68.0, 98.0)
 
 # ── image names ──────────────────────────────────────────────────────────────
 #   Cracking: ONLY the D4 crack image list (d4_images_crack_images.parquet; lane from the file name, e.g. '..._L1_...').

@@ -61,6 +61,31 @@ GEO_RULES = [('start_lat',  lambda n: 'start' in n and 'lat' in n),
              ('end_long',   lambda n: 'end' in n and 'lon' in n)]
 
 
+GEO_PAIRS = [('start_lat', 'start_long'), ('end_lat', 'end_long'), ('defect_lat', 'defect_long')]
+GEO_LOG = []          # (source, lane, pair, rows blanked) -> written to dq/geo_checks.csv
+
+
+def drop_bad_geo(df, source):
+    """Latitude / longitude pairs outside config.LAT_RANGE / LON_RANGE (India) -> both blank. Returns df."""
+    if df is None or df.empty:
+        return df
+    lane = df['lane'] if 'lane' in df.columns else pd.Series('-', index=df.index)
+    for la, lo in GEO_PAIRS:
+        if la not in df.columns or lo not in df.columns:
+            continue
+        lat, lon = pd.to_numeric(df[la], errors='coerce'), pd.to_numeric(df[lo], errors='coerce')
+        bad = (lat.notna() | lon.notna()) & ~(lat.between(*config.LAT_RANGE) & lon.between(*config.LON_RANGE))
+        if bad.any():
+            df = df.copy()
+            df.loc[bad, [la, lo]] = np.nan
+            for ln, n in lane[bad].fillna('-').value_counts().sort_index().items():
+                GEO_LOG.append({'source': source, 'lane': ln, 'columns': f'{la}/{lo}', 'rows_blanked': int(n)})
+            print(f"  WARNING: {source}: {int(bad.sum()):,} {la}/{lo} pair(s) outside India "
+                  f"(lat {config.LAT_RANGE}, long {config.LON_RANGE}) → blank; lanes "
+                  f"{dict(lane[bad].fillna('-').value_counts().sort_index())}")
+    return df
+
+
 def vc_label(s):
     """D4 Visual Condition text; a whole number 1–5 becomes its label (config.D4_VC_NUMBER_LABELS).
        Returns (labels, number of cells converted)."""
@@ -139,6 +164,7 @@ def d4_to_long(raw):
         print(f"  D4 Visual Condition given as numbers on {n_vc_num:,} cells → labels "
               f"({', '.join(f'{k} = {v}' for k, v in sorted(config.D4_VC_NUMBER_LABELS.items(), reverse=True))})")
     long = pd.concat(frames, ignore_index=True).dropna(subset=['start_chainage'])
+    long = drop_bad_geo(long, 'D4 10m defect report')
     return long.sort_values(['lane', 'start_chainage'], kind='mergesort').reset_index(drop=True)
 
 

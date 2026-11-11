@@ -490,6 +490,14 @@ def run_dq(prj, tables=None):
     _value_and_breach_checks(prj, tables, summary, mism)
     _failing_lanes_checks(prj, tables, summary, mism)
     _pothole_check(prj, tables, summary, mism)
+    from common.project import GEO_LOG              # coordinates set blank (outside India) while building silver
+    os.makedirs(os.path.join(prj.out_dir, 'dq'), exist_ok=True)
+    geo = pd.DataFrame(GEO_LOG, columns=['source', 'lane', 'columns', 'rows_blanked'])
+    geo.insert(0, 'upc', prj.upc)
+    geo.to_csv(os.path.join(prj.out_dir, 'dq', 'geo_checks.csv'), index=False)
+    if len(geo):
+        print(f"\nGEO: coordinates outside India set blank - see dq/geo_checks.csv\n"
+              + geo.groupby('source')['rows_blanked'].sum().to_string())
     res = pd.DataFrame(summary)
     if res.empty:
         print("\nDQ: no D2 data to compare against")

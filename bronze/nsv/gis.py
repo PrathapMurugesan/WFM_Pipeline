@@ -5,6 +5,10 @@ Layout (instruction sheet, D3):
     GIS Mapping -As Per CA / -As per IRC          one folder per standard           (schema: gis.<std>)
         GIS Shape Files/<Layer>/<Layer>.cpg csv dbf prj qmd shp shx                (gis.<std>.shapefiles.layers)
         GPKG Files/<Name>-GIS.gpkg  -> one or more layers inside                   (gis.<std>.gpkg.files)
+Also accepted (vendor deliveries): one folder per format AND standard, the standard in its name -
+    GIS_Shape_Files_-_As_per_CA/SHP Files/Cracking_<section>_Deliverables/Cracking_<section>.shp ...
+    GPKG_Files_-_As_per_IRC/GPKG/Cracking.gpkg  Distress.gpkg  Pothole.gpkg
+  (container / file names through the schema aliases; a layer folder or file containing the layer name matches)
 
 What is saved (every value as text, exactly as delivered, like the Excel sheets):
     d3_<std>_shp_<layer>.parquet + .csv           attributes of the .dbf + geometry_type + geometry_wkt
@@ -125,6 +129,31 @@ def _below(files, folder):
 STD_TOKEN = {"irc": re.compile(r"(?<![a-z])irc(?![a-z])"), "ca": re.compile(r"(?<![a-z])ca(?![a-z])")}
 
 
+def _words(name):
+    return re.sub(r"[_\-.]+", " ", str(name).lower())
+
+
+def _std_roots(files, folder, gis_cfg):
+    """{standard: [root folders]} - the schema folder ('GIS Mapping -As Per CA'); else every top-level D3 folder
+    whose name names this standard and not the other one (vendors split by format: 'GIS_Shape_Files_-_As_per_CA'
+    + 'GPKG_Files_-_As_per_CA'). A standard without any is left out. Returns (roots, standards found by name)."""
+    base = folder.strip("/")
+    tops = sorted({PurePosixPath(p).relative_to(base).parts[0] for p in files
+                   if len(PurePosixPath(p).relative_to(base).parts) > 1})
+    roots, by_name = {}, set()
+    for key, std in gis_cfg.items():
+        exact = _sub_folder(files, base, std["folder_names"])
+        if exact:
+            roots[key] = [exact]
+            continue
+        other = [rx for k, rx in STD_TOKEN.items() if k != key]
+        hits = [t for t in tops if STD_TOKEN[key].search(_words(t)) and not any(rx.search(_words(t)) for rx in other)]
+        if hits:
+            roots[key] = [f"{base}/{t}" for t in hits]
+            by_name.add(key)
+    return roots, by_name
+
+
 def _flat_standard(files, folder, gis_cfg):
     """
     Vendors sometimes leave out the 'GIS Mapping -As Per CA / -As per IRC' level and put 'GIS Shape Files' /
@@ -157,17 +186,21 @@ def _flat_standard(files, folder, gis_cfg):
 
 def extract_gis(run, folder, gis_cfg):
     files = settings.INPUT.list_files(folder)
-    flat_std, flat_reason = _flat_standard(files, folder, gis_cfg)
+    roots, by_name = _std_roots(files, folder, gis_cfg)
+    flat_std, flat_reason = _flat_standard(files, folder, gis_cfg) if not roots else (None, None)
+    if by_name:
+        run.manifest["gis_layout"] = {"flat": False, "standard_folders": roots,
+                                      "reason": "standard taken from the folder names (vendor layout)"}
+        logger.warning(f"[gis] vendor layout - standard folders from their names: {roots}")
     if flat_reason:
         run.manifest["gis_layout"] = {"flat": True, "standard": flat_std, "reason": flat_reason}
         (logger.warning if flat_std else logger.error)(
             f"[gis] {flat_reason} -> " + (f"read as '{flat_std}'" if flat_std else "not read"))
     for std_key, std in gis_cfg.items():
-        std_folder = _sub_folder(files, folder, std["folder_names"])
-        if not std_folder and std_key == flat_std:
-            std_folder = folder.strip("/")                 # the shapefile / GPKG folders sit directly in D3
+        std_roots = roots.get(std_key) or ([folder.strip("/")] if std_key == flat_std else [])
+        std_folder = ", ".join(std_roots)            # the shapefile / GPKG folders sit directly in D3 when flat
         meta = {"schema": {}, "profile": {}}
-        if not std_folder:
+        if not std_roots:
             for kind, items in (("shp", std.get("shapefiles", {}).get("layers", {})),
                                 ("gpkg", std.get("gpkg", {}).get("files", {}))):
                 for key, cfg in items.items():
@@ -176,9 +209,9 @@ def extract_gis(run, folder, gis_cfg):
             logger.error(f"[{std_key}] no folder like {std['folder_names']} in '{folder}'")
             continue
         logger.info(f"---------- [{std_key}] {std_folder} ----------")
-        std_files = _below(files, std_folder)
+        std_files = sorted({p for r in std_roots for p in _below(files, r)})
         if std.get("shapefiles"):
-            _extract_shapefiles(run, std_key, std_folder, std_files, std["shapefiles"], meta)
+            _extract_shapefiles(run, std_key, std_roots, std_files, std["shapefiles"], meta)
         if std.get("gpkg"):
             _extract_gpkg(run, std_key, std_folder, std_files, std["gpkg"], meta)
         for name, content in meta.items():
@@ -225,8 +258,9 @@ def _gate_and_save(run, df, expected_fields, label, out_parts, meta, entry, firs
     return True
 
 
-def _extract_shapefiles(run, std_key, std_folder, std_files, cfg, meta):
-    shp_folder = _sub_folder(std_files, std_folder, cfg["folder_names"])
+def _extract_shapefiles(run, std_key, std_roots, std_files, cfg, meta):
+    shp_folder = next((f for r in std_roots for f in [_sub_folder(_below(std_files, r), r, cfg["folder_names"])] if f),
+                      None)
     layer_files = _below(std_files, shp_folder) if shp_folder else []
     used_folders = set()
     for key, layer in cfg["layers"].items():

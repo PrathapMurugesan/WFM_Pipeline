@@ -149,7 +149,8 @@ def _cracking_from_nsv_cracks(prj):
         'image_name': clean_text(d[img]) if img else None,
         'datetime': pd.to_datetime(d[dt], errors='coerce') if dt else prj.run_ts,
         'source': 'nsv_cracks'})
-    out = out.dropna(subset=['start', 'crack_pct']).reset_index(drop=True)
+    from common.project import drop_bad_geo
+    out = drop_bad_geo(out.dropna(subset=['start', 'crack_pct']).reset_index(drop=True), 'D4 NSV cracks')
     out[['start', 'end']] = out[['start', 'end']].round().astype('int64')
     return out.sort_values(['lane', 'start'], kind='mergesort').reset_index(drop=True)
 

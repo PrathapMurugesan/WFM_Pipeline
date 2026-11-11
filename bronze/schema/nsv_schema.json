@@ -3743,97 +3743,129 @@
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L4 Length",
                       "excel_column": "AV",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L4 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L3 Length",
                       "excel_column": "AW",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L3 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L2 Length",
                       "excel_column": "AX",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L2 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L1 Length",
                       "excel_column": "AY",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L1 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R1 Length",
                       "excel_column": "AZ",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R1 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R2 Length",
                       "excel_column": "BA",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R2 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R3 Length",
                       "excel_column": "BB",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R3 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R4 Length",
                       "excel_column": "BC",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R4 Length"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L4",
                       "excel_column": "BD",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L4"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L3",
                       "excel_column": "BE",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L3"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L2",
                       "excel_column": "BF",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L2"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | L1",
                       "excel_column": "BG",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | L1"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R1",
                       "excel_column": "BH",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R1"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R2",
                       "excel_column": "BI",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R2"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R3",
                       "excel_column": "BJ",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R3"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Cracking Lane Area (sq. m.) | R4",
                       "excel_column": "BK",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Current Cycle | Cracking Lane Area (%) | R4"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Roughness BI (in mm/km) | L4 Length",
@@ -4031,97 +4063,129 @@
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L4 Length",
                       "excel_column": "CS",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L4 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L3 Length",
                       "excel_column": "CT",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L3 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L2 Length",
                       "excel_column": "CU",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L2 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L1 Length",
                       "excel_column": "CV",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L1 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R1 Length",
                       "excel_column": "CW",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R1 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R2 Length",
                       "excel_column": "CX",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R2 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R3 Length",
                       "excel_column": "CY",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R3 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R4 Length",
                       "excel_column": "CZ",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R4 Length"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L4",
                       "excel_column": "DA",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L4"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L3",
                       "excel_column": "DB",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L3"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L2",
                       "excel_column": "DC",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L2"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | L1",
                       "excel_column": "DD",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | L1"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R1",
                       "excel_column": "DE",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R1"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R2",
                       "excel_column": "DF",
                       "value_type": "number",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R2"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R3",
                       "excel_column": "DG",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R3"
+                      ]
                     },
                     {
                       "name": "Previous Cycle | Cracking Lane Area (sq. m.) | R4",
                       "excel_column": "DH",
                       "value_type": "empty",
-                      "aliases": []
+                      "aliases": [
+                        "Previous Cycle | Cracking Lane Area (%) | R4"
+                      ]
                     },
                     {
                       "name": "Current Cycle | Distress | Failing Lanes",
@@ -4561,7 +4625,8 @@
                       "value_type": "number",
                       "aliases": []
                     }
-                  ]
+                  ],
+                  "_note": "Cracking Lane Area: the template has '(sq. m.)'; deliveries with '(%)' (CA cracking threshold in % area) are accepted through aliases - the values keep the unit of the file"
                 },
                 "comparison_ca_rigid": {
                   "sheet_names": [
@@ -8078,7 +8143,10 @@
           ],
           "shapefiles": {
             "folder_names": [
-              "GIS Shape Files"
+              "GIS Shape Files",
+              "SHP Files",
+              "Shape Files",
+              "Shapefiles"
             ],
             "layers": {
               "cracking": {
@@ -8461,12 +8529,15 @@
           },
           "gpkg": {
             "folder_names": [
-              "GPKG Files"
+              "GPKG Files",
+              "GPKG File",
+              "GPKG"
             ],
             "files": {
               "cracking_gis": {
                 "file_names": [
-                  "Cracking-GIS.gpkg"
+                  "Cracking-GIS.gpkg",
+                  "Cracking.gpkg"
                 ],
                 "required": true,
                 "ignore_layers": [
@@ -8530,7 +8601,8 @@
               },
               "distress_gis": {
                 "file_names": [
-                  "Distress-GIS.gpkg"
+                  "Distress-GIS.gpkg",
+                  "Distress.gpkg"
                 ],
                 "required": true,
                 "ignore_layers": [
@@ -8715,7 +8787,9 @@
               },
               "potholes_gis": {
                 "file_names": [
-                  "Potholes-GIS.gpkg"
+                  "Potholes-GIS.gpkg",
+                  "Pothole.gpkg",
+                  "Potholes.gpkg"
                 ],
                 "required": false,
                 "ignore_layers": [
@@ -8741,7 +8815,10 @@
           ],
           "shapefiles": {
             "folder_names": [
-              "GIS Shape Files"
+              "GIS Shape Files",
+              "SHP Files",
+              "Shape Files",
+              "Shapefiles"
             ],
             "layers": {
               "cracking": {
@@ -9266,12 +9343,15 @@
           },
           "gpkg": {
             "folder_names": [
-              "GPKG Files"
+              "GPKG Files",
+              "GPKG File",
+              "GPKG"
             ],
             "files": {
               "cracking_gis": {
                 "file_names": [
-                  "Cracking-GIS.gpkg"
+                  "Cracking-GIS.gpkg",
+                  "Cracking.gpkg"
                 ],
                 "required": true,
                 "ignore_layers": [
@@ -9340,7 +9420,8 @@
               },
               "distress_gis": {
                 "file_names": [
-                  "Distress-GIS.gpkg"
+                  "Distress-GIS.gpkg",
+                  "Distress.gpkg"
                 ],
                 "required": true,
                 "ignore_layers": [
@@ -9578,7 +9659,9 @@
               },
               "potholes_gis": {
                 "file_names": [
-                  "Potholes-GIS.gpkg"
+                  "Potholes-GIS.gpkg",
+                  "Pothole.gpkg",
+                  "Potholes.gpkg"
                 ],
                 "required": true,
                 "ignore_layers": [

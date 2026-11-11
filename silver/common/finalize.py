@@ -393,6 +393,8 @@ def _linear_road_condition(df):
 def finalize(df, table, prj):
     if df.empty:
         return df
+    from common.project import drop_bad_geo
+    df = drop_bad_geo(df, table)             # every table: coordinates outside India never reach silver
     df = apply_pci(df, table, prj)
     # reporting_interval_m per row's standard, from D2 only (CA rows: 'Comparison as per CA', IRC rows: 'as per IRC')
     d = defect_of(table)
