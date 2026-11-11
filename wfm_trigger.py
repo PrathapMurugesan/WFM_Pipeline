@@ -5,6 +5,9 @@ wfm_trigger.py - process every WFM survey that is 'Survey Final Approved' and no
     python wfm_trigger.py --dry-run            only show what would be processed (and why the others are not)
     python wfm_trigger.py --survey <id>        only this survey (still checked against the rules)
     python wfm_trigger.py --survey <id> --force   process it again / although not final-approved
+    python wfm_trigger.py --reprocess          every final-approved survey AGAIN (new logic), processed log ignored
+    python wfm_trigger.py ... --export         after each survey: one zip (bronze, silver, gold, logs, no images)
+                                               in output/exports/ (tools/export_surveys.py)
     passed on to run_pipeline.py: --output, --output-s3, --project-master, --tracker, --no-cdn, --cdn-dry-run
 
 Each run:
@@ -145,7 +148,11 @@ def main(args):
     ap.add_argument("--output", default=str(ROOT / "output"))
     ap.add_argument("--output-s3", default=os.environ.get("NSV_OUTPUT_S3"),
                     help="s3://bucket/prefix (default: env NSV_OUTPUT_S3); state is kept there too")
-    ap.add_argument("--project-master")
+    ap.add_argument("--reprocess", action="store_true",
+                    help="process every final-approved survey again, also those already processed")
+    ap.add_argument("--export", action="store_true", help="zip each processed survey into output/exports/")
+    ap.add_argument("--project-master", default=os.environ.get("NSV_PROJECT_MASTER"),
+                    help="gold ris_view (default: env NSV_PROJECT_MASTER)")
     ap.add_argument("--tracker")
     ap.add_argument("--no-cdn", action="store_true")
     ap.add_argument("--cdn-dry-run", action="store_true")
@@ -180,7 +187,7 @@ def main(args):
                 log(f"  skip {sid}: not ready - {'; '.join(why)}")
             continue
         last = state.get(sid)
-        if not o.force and last.get("status") in DONE:
+        if not o.force and not o.reprocess and last.get("status") in DONE:
             counts["already_processed"] = counts.get("already_processed", 0) + 1
             continue
         if not o.force and last.get("status") == "failed" and last.get("attempts", 0) >= MAX_ATTEMPTS:
@@ -204,13 +211,14 @@ def main(args):
             log(f"  skip {sid}: final approved, but nothing in S3 yet")
             continue
         fp = wfm_metadata.fingerprint(sched, reports) + f"|s3:{upload['files']}:{upload['newest']}"
-        reason = "forced" if o.force else ("retry" if last.get("status") == "failed" else "new")
+        reason = "forced" if o.force else "again" if o.reprocess and last.get("status") in DONE else (
+            "retry" if last.get("status") == "failed" else "new")
         log(f"  {reason.upper():8} {sid}  UPC {details['upc']}  zone {details['zone']}  phase {details['phase']}  cycle {details['cycle']}  "
             f"S3 {upload['files']} file(s) {upload['deliverables']}")
         if o.dry_run:
             counts["would_run"] = counts.get("would_run", 0) + 1
             continue
-        attempts = (last.get("attempts", 0) + 1) if last.get("status") == "failed" and not o.force else 1
+        attempts = (last.get("attempts", 0) + 1) if last.get("status") == "failed" and not (o.force or o.reprocess) else 1
         state.put(sid, status="running", started_at=now(), fingerprint=fp, attempts=attempts, upc=details["upc"])
         started = datetime.now()
         code = run_survey(item, details, o, out)
@@ -222,6 +230,9 @@ def main(args):
         counts[status] = counts.get(status, 0) + 1
         failed += status == "failed"
         log(f"  DONE {sid}: {status} (exit code {code})")
+        if o.export:
+            subprocess.call([sys.executable, str(ROOT / "tools" / "export_surveys.py"), sid, "--no-images",
+                             "--output", str(out)], cwd=ROOT)
 
     log(f"trigger finished: {counts}")
     return 1 if failed else 0

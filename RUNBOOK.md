@@ -71,6 +71,7 @@ Shows every survey: `NEW` = would be processed now; `skip … status '…'` = no
 .venv/bin/python wfm_trigger.py --survey <survey id>                # one survey (must be Final Approved)
 .venv/bin/python wfm_trigger.py --survey <survey id> --force        # again / although not Final Approved
 .venv/bin/python wfm_trigger.py --survey <survey id> --force --cdn-dry-run   # test, no CDN upload
+.venv/bin/python wfm_trigger.py --reprocess --export      # ALL final-approved surveys again (new logic) + one zip each
 ```
 
 ## 7. Schedule the trigger (every 15 minutes)
