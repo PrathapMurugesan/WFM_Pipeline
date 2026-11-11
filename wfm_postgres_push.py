@@ -146,6 +146,12 @@ def load_frames(silver, gold, log=print):
     return frames
 
 
+def load_full(silver):
+    """All rows of the silver defect tables (dlm_kpi/): the source of parent rows needed by foreign keys."""
+    return {t: pd.read_parquet(silver / "dlm_kpi" / f"{t}.parquet") for t in SILVER_TABLES
+            if (silver / "dlm_kpi" / f"{t}.parquet").is_file()}
+
+
 # =============================================================================
 # Database
 # =============================================================================
@@ -229,6 +235,7 @@ def plan(cur, schema, table, df, table_map):
         d = db_column(c, cols)
         if d and d not in rename.values():
             rename[c] = d
+    p["rename"] = rename
     p["renamed"] = {a: b for a, b in rename.items() if a != b}
     p["not_in_table"] = [c for c in df.columns if c not in rename]
     df = df[list(rename)].rename(columns=rename)
@@ -265,23 +272,139 @@ def plan(cur, schema, table, df, table_map):
     return p
 
 
-def write(cur, schema, p, delete=True):
-    from psycopg2.extras import execute_values
-    df = p["frame"]
+def delete_rows(cur, schema, p):
+    """This survey's earlier rows of the table (by p['keys'])."""
     target = p["target"].split(".", 1)[1]
-    cols = table_columns(cur, schema, target)
     deleted = 0
-    if delete and p["key_values"]:
+    if p["key_values"]:
         where = " AND ".join(f'CAST("{c}" AS TEXT) = %s' for c in p["keys"])
         for row in p["key_values"]:
             cur.execute(f'DELETE FROM "{schema}"."{target}" WHERE {where}', row)
             deleted += cur.rowcount
+    return deleted
+
+
+def insert_rows(cur, schema, p):
+    from psycopg2.extras import execute_values
+    df = p["frame"]
+    target = p["target"].split(".", 1)[1]
+    cols = table_columns(cur, schema, target)
     use = p["columns"]
     values = [tuple(_convert(v, *cols[c]) for c, v in zip(use, r)) for r in df[use].itertuples(index=False, name=None)]
     if values:
         execute_values(cur, f'INSERT INTO "{schema}"."{target}" ({", ".join(chr(34) + c + chr(34) for c in use)}) '
                             f'VALUES %s', values, page_size=1000)
-    return deleted, len(values)
+    return len(values)
+
+
+# =============================================================================
+# Foreign keys: a child row (e.g. master_rutting_child_10m.parent_id) needs its parent row. Only breach rows are
+# pushed, and the parent of a breached child is often not breached itself -> the referenced rows are added from
+# silver dlm_kpi/ (all rows of this survey). Tables are written parents first (deleted children first).
+# =============================================================================
+def foreign_keys(cur, schema, table):
+    """[(name, [columns], referenced table, [referenced columns])] of schema.table."""
+    cur.execute("""
+        SELECT con.conname, ref.relname,
+               (SELECT array_agg(a.attname ORDER BY k.n) FROM unnest(con.conkey) WITH ORDINALITY k(att, n)
+                  JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.att),
+               (SELECT array_agg(a.attname ORDER BY k.n) FROM unnest(con.confkey) WITH ORDINALITY k(att, n)
+                  JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.att)
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+        JOIN pg_class ref ON ref.oid = con.confrelid
+        WHERE con.contype = 'f' AND ns.nspname = %s AND rel.relname = %s""", (schema, table))
+    return [(n, list(c), r, list(rc)) for n, r, c, rc in cur.fetchall()]
+
+
+def _as_text(v):
+    if _blank(v):
+        return None
+    return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip()
+
+
+def _tuples(df, cols):
+    if not all(c in df.columns for c in cols):
+        return set()
+    return {t for t in (tuple(_as_text(v) for v in row) for row in df[cols].itertuples(index=False, name=None))
+            if None not in t}
+
+
+def _in_db(cur, schema, table, cols, wanted, skip=None):
+    """Which of the wanted key tuples exist in schema.table. skip = (key columns, [key values]) of this survey's
+    rows, which are deleted before the insert and so do not count."""
+    if not wanted:
+        return set()
+    first = sorted({t[0] for t in wanted})
+    sel = ", ".join(f'CAST("{c}" AS TEXT)' for c in cols)
+    sql, args = f'SELECT {sel} FROM "{schema}"."{table}" WHERE CAST("{cols[0]}" AS TEXT) = ANY(%s)', [first]
+    if skip and skip[0] and skip[1]:
+        for kv in skip[1]:
+            sql += " AND NOT (" + " AND ".join(f'CAST("{c}" AS TEXT) = %s' for c in skip[0]) + ")"
+            args += list(kv)
+    cur.execute(sql, args)
+    return {tuple(r) for r in cur.fetchall()} & wanted
+
+
+def resolve_foreign_keys(cur, schema, plans, full, delete=True, log=print):
+    """Adds the referenced rows of our own tables (from full = silver dlm_kpi frames) and returns the write order
+    (referenced tables first). A reference that is neither pushed, in the database nor in silver blocks the table."""
+    ours = {p["target"].split(".", 1)[1]: t for t, p in plans.items() if p["exists"]}
+    fks = {t: foreign_keys(cur, schema, p["target"].split(".", 1)[1]) for t, p in plans.items() if p["exists"]}
+    for _ in range(4):                                   # parents of added parents, a few levels at most
+        changed = False
+        for t, p in plans.items():
+            if not p["exists"] or not len(p["frame"]):
+                continue
+            p.setdefault("fk_missing", {})
+            for name, cols, ref, rcols in fks[t]:
+                need = _tuples(p["frame"], cols)
+                if not need:
+                    continue
+                r = ours.get(ref)
+                if r:
+                    need -= _tuples(plans[r]["frame"], rcols)
+                skip = (plans[r]["keys"], plans[r]["key_values"] or [list(k) for k in _tuples(p["frame"], plans[r]["keys"])]) \
+                    if r and delete else None
+                need -= _in_db(cur, schema, ref, rcols, need, skip)
+                if need and r and r in full:
+                    src = full[r].rename(columns=plans[r]["rename"])
+                    src = src[[c for c in plans[r]["columns"] if c in src.columns]]
+                    keys = [tuple(_as_text(v) for v in row) for row in src[rcols].itertuples(index=False, name=None)] \
+                        if all(c in src.columns for c in rcols) else []
+                    add = src[[k in need for k in keys]] if keys else src.iloc[0:0]
+                    if len(add):
+                        frame = pd.concat([plans[r]["frame"], add], ignore_index=True)
+                        frame = frame.drop_duplicates("id") if "id" in frame.columns else frame.drop_duplicates()
+                        plans[r]["fk_added"] = plans[r].get("fk_added", 0) + len(frame) - len(plans[r]["frame"])
+                        plans[r]["frame"], plans[r]["rows"] = frame, len(frame)
+                        if plans[r]["keys"]:              # the delete key of a table that had no rows before
+                            plans[r]["key_values"] = [list(k) for k in _tuples(frame, plans[r]["keys"])]
+                        need -= _tuples(add, rcols)
+                        changed = True
+                if need:
+                    p["fk_missing"][name] = (cols, ref, rcols, len(need), sorted(need)[:3])
+                else:
+                    p["fk_missing"].pop(name, None)
+        if not changed:
+            break
+    for p in plans.values():
+        if p.get("fk_missing"):
+            p["blocked"] = True
+    # write order: a table after the tables it references (only edges between our own tables)
+    order, seen = [], set()
+
+    def visit(t, path=()):
+        if t in seen or t in path:
+            return
+        for _, _, ref, _ in fks.get(t, []):
+            if ours.get(ref) and ours[ref] != t:
+                visit(ours[ref], path + (t,))
+        seen.add(t)
+        order.append(t)
+    for t in plans:
+        visit(t)
+    return order
 
 
 # =============================================================================
@@ -357,6 +480,7 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
             if any(t in GOLD_TABLES for t in frames):
                 add_gold_ids(cur, schema, frames, survey_id, e["upc"], log)
             plans = {t: plan(cur, schema, t, df, table_map) for t, df in frames.items()}
+            order = resolve_foreign_keys(cur, schema, plans, load_full(silver) if only != "gold" else {}, delete, log)
             for t, p in plans.items():
                 if not p["exists"]:
                     log(f"  {t:30} -> {p['target']:45} TABLE NOT FOUND - skipped"
@@ -378,6 +502,11 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
                 if p["no_key"]:
                     log("      NO SURVEY KEY: the table has neither survey_id nor upc + phase + cycle - this survey's "
                         "earlier rows cannot be told apart (a delete by upc alone would hit other cycles)")
+                if p.get("fk_added"):
+                    log(f"      + {p['fk_added']} parent row(s) added from silver dlm_kpi (referenced by child rows)")
+                for name, (cols, ref, rcols, n, sample) in p.get("fk_missing", {}).items():
+                    log(f"      FOREIGN KEY {name}: {cols} -> {ref}{rcols}: {n} value(s) found nowhere "
+                        f"(not pushed, not in the database, not in silver) e.g. {sample}")
             if not do_write:
                 conn.rollback()
                 return {t: p for t, p in plans.items()}
@@ -385,10 +514,9 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
             if blocked:
                 raise RuntimeError(f"nothing written - blocked tables {blocked} (required columns / id clash, see "
                                    f"above); push without them with --only silver, or fix them first")
-            done = {}
-            for t, p in plans.items():
-                if p["exists"] and p["rows"]:
-                    done[t] = write(cur, schema, p, delete)
+            todo = [t for t in order if plans[t]["exists"]]
+            deleted = {t: delete_rows(cur, schema, plans[t]) if delete else 0 for t in reversed(todo)}  # children first
+            done = {t: (deleted[t], insert_rows(cur, schema, plans[t])) for t in todo if plans[t]["rows"]}  # parents first
             conn.commit()
             for t, (d, n) in done.items():
                 log(f"  WRITTEN {plans[t]['target']:45} deleted {d:6} (earlier rows of this survey) | inserted {n:6}")
