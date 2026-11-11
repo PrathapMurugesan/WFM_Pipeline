@@ -15,6 +15,11 @@ SILVER_TABLES = [
     "master_chainage",
 ]
 
+# Tables that may be missing from INPUT_DIR (loaded as empty) and the columns the code reads from them
+OPTIONAL_TABLES = {"master_roughness_child_10m", "master_rutting_child_10m"}
+OPTIONAL_TABLE_COLUMNS = ["upc", "source_system", "detected_on", "phase", "cycle", "zone", "pavement_type",
+                          "threshold_name", "metric_value", "start_chainage", "end_chainage"]
+
 _READERS = {
     ".parquet": pd.read_parquet,
     ".csv": partial(pd.read_csv, low_memory=False),
@@ -46,7 +51,16 @@ def find_table_file(directory, name):
 def load_silver_tables(input_dir, table_names=SILVER_TABLES):
     tables = {}
     for name in table_names:
-        df = read_table_file(find_table_file(input_dir, name))
+        try:
+            path = find_table_file(input_dir, name)
+        except FileNotFoundError:
+            if name not in OPTIONAL_TABLES:
+                raise
+            # input_silver_data has no child 10m tables: IRC categories stay empty
+            log.warning("%s not found in %s — treated as an empty table (no IRC categories)", name, input_dir)
+            tables[name] = pd.DataFrame({c: pd.Series(dtype="string") for c in OPTIONAL_TABLE_COLUMNS})
+            continue
+        df = read_table_file(path)
         # The notebook compared phase/cycle as strings ('2.0' -> '2') before every join
         for col in ("phase", "cycle"):
             if col in df.columns:

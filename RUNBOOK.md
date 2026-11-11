@@ -104,7 +104,8 @@ One run's folder (`output/logs/zone=…/<UPC>/run=<time>/`, same in S3):
 | `bronze_d1_run.log` … `d4` | details per deliverable |
 | `silver_run.log`, `silver_dq_summary.csv` | silver tables and the checks against D2 |
 | `cdn_images.csv` | every image: CDN link or error |
-| `gold_run.log` | gold KPIs |
+| `gold_status_run.log` | defect status from Postgres (udm_defect_reference / dlm_defect_case) |
+| `gold_run.log`, `gold_ris_view_run.log` | gold KPIs (ris_trends, final_intermediate, ris_view) |
 
 ## 9. Update the code
 
@@ -124,4 +125,6 @@ The cron job picks up the new code on its next run.
 
 ## Not active yet
 - **Postgres push** (`wfm_postgres_push.py`): the call is commented out in `run_pipeline.py` ("POSTGRES PUSH").
+  Before the push `ris_view_dw.Status` is mapped `Open` -> `open`, `Closed` -> `close` (PG enum `ris_view_kpi_status`;
+  `STAGING_VALUE_MAP` in `wfm_postgres_push.py`).
   Dry run: `.venv/bin/python wfm_postgres_push.py <silver run_date folder> <gold run_date folder> --upc <UPC> --phase <p> --cycle <c> --dry-run`

@@ -35,8 +35,15 @@ def find_table_file(directory, name):
     raise FileNotFoundError(f"No {name}.(parquet|csv|xlsx) found in {directory}")
 
 
-def load_table(input_dir, name):
-    path = find_table_file(input_dir, name)
+def load_table(input_dir, name, optional=False, columns=()):
+    """Load <input_dir>/<name>.*; with optional=True a missing file gives an empty table with `columns`."""
+    try:
+        path = find_table_file(input_dir, name)
+    except FileNotFoundError:
+        if not optional:
+            raise
+        log.warning("%s not found in %s — treated as an empty table", name, input_dir)
+        return pd.DataFrame({col: pd.Series(dtype="string") for col in columns})
     df = read_table_file(path)
     # The notebook joined on phase/cycle; compare them as strings ('2.0' -> '2') across sources
     for col in ("phase", "cycle"):
@@ -45,6 +52,19 @@ def load_table(input_dir, name):
     if "upc" in df.columns:
         df["upc"] = df["upc"].astype("string")
     log.info("Loaded %-30s rows: %s", path.name, f"{len(df):,}")
+    return df
+
+
+def load_columns(directory, name, columns):
+    """Only the given columns of <directory>/<name>.* (keeps large tables like master_cracking light)."""
+    path = find_table_file(directory, name)
+    if path.suffix.lower() == ".parquet":
+        df = pd.read_parquet(path, columns=columns)
+    elif path.suffix.lower() == ".csv":
+        df = pd.read_csv(path, usecols=columns, low_memory=False)
+    else:
+        df = read_table_file(path)[columns]
+    log.info("Loaded %-30s rows: %s (from %s)", path.name, f"{len(df):,}", Path(directory).name)
     return df
 
 

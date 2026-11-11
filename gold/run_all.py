@@ -1,7 +1,7 @@
 """Driver: runs the KPI pipelines in order, each as its own process from its own folder
 (every folder has its own utils package and .env).
 
-    python run_all.py                              # ris_trends -> intermediate -> ris_view
+    python run_all.py                              # ris_trends -> silver_update -> intermediate -> ris_view
     python run_all.py --only intermediate ris_view
     python run_all.py --keep-going                 # continue after a failure (dependents still skipped)
 
@@ -20,8 +20,9 @@ ROOT = Path(__file__).resolve().parent
 # name -> (folder, steps it depends on); run in this order
 PIPELINES = {
     "ris_trends": ("code_ris_trends", []),
-    "intermediate": ("code_intermediate_logic", []),
-    "ris_view": ("code_ris_view", ["intermediate"]),  # reads final_intermediate.csv
+    "silver_update": ("code_silver_update_status", []),                  # writes silver_data_with_status
+    "intermediate": ("code_intermediate_logic", ["silver_update"]),     # reads silver_data_with_status
+    "ris_view": ("code_ris_view", ["silver_update", "intermediate"]),   # reads both + final_intermediate.csv
 }
 
 

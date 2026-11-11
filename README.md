@@ -38,7 +38,9 @@ wfm_trigger.py  (cron, every 15 min - deploy/install_cron.sh)
                 POST https://nhaidhms-stage-api.dic.org.in/defects/images/upload (image, defect_type,
                 display_defect_id; HTTP 201 -> data.url) -> new column image_url (dlm_kpi + dlm_postgres;
                 rows without an id get it by image_name); list in silver dq/cdn_images.csv    wfm_cdn.py
-  7. GOLD
+  7. GOLD       RIS_KPI_Golden: silver_update (defect status from Postgres udm_defect_reference /
+                dlm_defect_case; unreachable -> all Open, flagged as a problem) -> ris_trends ->
+                intermediate -> ris_view (per defect type one Open and one Closed row)
   8. POSTGRES   silver dlm_postgres + gold -> the same Postgres: written, NOT active yet    wfm_postgres_push.py
   9. results + all logs -> s3://dhms-new-stgae/NSV_Pipeline/ ; survey marked processed
 ```
@@ -77,7 +79,7 @@ output/logs/zone=B/phase=2/cycle=1/N-02001-12001-GJ/run=<time>/
     bronze_report.csv                  one row per file / sheet, problems in UPPER CASE
     bronze_batch.json                  bronze summary
     silver_run.log  silver_dq_summary.csv  silver_dq_mismatches.csv  silver_rule_checks.csv
-    gold_run.log
+    gold_status_run.log  gold_run.log  gold_ris_view_run.log
     metadata.json                      the survey's Postgres rows
     run_summary.json                   exit code, folders, which files were collected
 ```
@@ -115,5 +117,10 @@ Without Postgres values (`--no-db` and no `--zone/--phase/--cycle`), the output 
   (Detailed) for the tables *and* the thresholds.
 - **Silver** also files reports as `report=<id>/<UPC>` (zone / phase / cycle `NA` / `0` / `0` when not given).
 - **Silver / gold** are written per run date (`run_date=<date>/`), so a rerun never overwrites an earlier one.
-- **Gold:** code unchanged.
+- **Gold:** the RIS_KPI_Golden code, with two small fixes for the WFM silver (marked in the code):
+  chainages read as numbers of one type (`code_intermediate_logic/utils/defect_ids.py`), and the IRC child rows
+  take their status from the CA parent row, as the WFM parent tables also hold IRC rows
+  (`code_ris_view/utils/defect_counts.py`). `run_pipeline.py` passes the folders / Postgres settings (no gold .env
+  change needed); reporting intervals from silver `master_reporting_interval`.
+  Postgres schema of the status tables: env `NSV_STATUS_DB_SCHEMA` (default: DB_SCHEMA of postgres_creds.txt, else public).
 - The EC2 shell wrappers (`run_*_s3.sh`) are replaced by `run_pipeline.py`.

@@ -15,17 +15,20 @@ _READERS = {
     ".xlsx": pd.read_excel,
     ".xls": pd.read_excel,
 }
+# keyword each reader uses to read only some columns
+_COLUMNS_ARG = {".parquet": "columns", ".csv": "usecols", ".xlsx": "usecols", ".xls": "usecols"}
 
 
-def read_table_file(path):
+def read_table_file(path, columns=None):
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {path}")
+    suffix = path.suffix.lower()
     try:
-        reader = _READERS[path.suffix.lower()]
+        reader = _READERS[suffix]
     except KeyError:
         raise ValueError(f"Unsupported file type '{path.suffix}' for {path}") from None
-    return reader(path)
+    return reader(path, **({_COLUMNS_ARG[suffix]: columns} if columns else {}))
 
 
 def find_table_file(directory, name):
@@ -50,9 +53,9 @@ def _normalize_keys(df):
     return df
 
 
-def load_table(input_dir, name):
+def load_table(input_dir, name, columns=None):
     path = find_table_file(input_dir, name)
-    df = _normalize_keys(read_table_file(path))
+    df = _normalize_keys(read_table_file(path, columns))
     log.info("Loaded %-35s rows: %s", path.name, f"{len(df):,}")
     return df
 

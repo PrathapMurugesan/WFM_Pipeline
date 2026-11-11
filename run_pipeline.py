@@ -50,10 +50,37 @@ LAYERS = ["bronze", "silver", "gold"]
 REPORT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 # silver writes nothing for an empty table, and gold stops on a missing file -> checked before gold
 GOLD_TABLES = ["master_chainage", "master_reporting_interval", "dlm_threshold_mapping",
-               "master_roughness_parent", "master_roughness_child_100m", "master_roughness_child_10m",
-               "master_rutting_parent", "master_rutting_child_100m", "master_rutting_child_10m",
-               "master_cracking_parent", "master_cracking_child_100m", "master_cracking"]
-GOLD_VIEW_TABLES = ["master_pothole", "master_ravelling_parent"]
+               "master_roughness_parent", "master_rutting_parent", "master_ravelling_parent",
+               "master_pothole", "master_cracking"]
+GOLD_VIEW_TABLES = ["master_ravelling_child_10m", "master_roughness_child_10m", "master_rutting_child_10m"]
+# gold silver_update: Postgres tables with the defect case status; without Postgres they are used empty
+# (every defect then counts as Open). Columns = the ones the gold code reads.
+STATUS_DB_TABLES = {"udm_defect_reference": ["id", "defect_id", "defect_collection"],
+                    "dlm_defect_case": ["defect_reference_id", "current_status", "defect_type", "record_level"]}
+
+
+def gold_status_env(log, no_db):
+    """Environment for gold code_silver_update_status: the DB_* settings from postgres_creds.txt (the same
+    database the survey status comes from). Schema: env NSV_STATUS_DB_SCHEMA, else DB_SCHEMA, else public.
+    None when there is no database (--no-db or no credentials)."""
+    if no_db:
+        return None
+    try:
+        import wfm_metadata
+        c = wfm_metadata.load_creds()
+    except Exception as e:
+        log(f"  defect status: no Postgres credentials ({e})")
+        return None
+    return {"DB_HOST": c["DB_HOST"], "DB_PORT": str(c.get("DB_PORT") or 5432), "DB_USER": c["DB_USER"],
+            "DB_PASSWORD": c["DB_PASSWORD"], "DB_NAME": wfm_metadata.databases(c)[0],
+            "DB_SCHEMA": os.environ.get("NSV_STATUS_DB_SCHEMA") or c.get("DB_SCHEMA") or "public"}
+
+
+def empty_status_tables(folder):
+    """Header-only CSVs of the status tables: silver_update then reads them instead of Postgres."""
+    folder.mkdir(parents=True, exist_ok=True)
+    for table, cols in STATUS_DB_TABLES.items():
+        (folder / f"{table}.csv").write_text(",".join(cols) + "\n", encoding="utf-8")
 
 
 class Log:
@@ -135,8 +162,9 @@ def collect_logs(ctx, code):
         bronze_report.csv               one row per file / sheet - problems in UPPER CASE
         bronze_batch.json               bronze summary (accepted, totals)
         silver_run.log, silver_dq_summary.csv, silver_dq_mismatches.csv, silver_rule_checks.csv
-        gold_run.log
-        metadata.json                   the survey's Postgres rows (zone / phase / cycle / UPC, approvals)
+        gold_status_run.log             gold silver_update: defect status from Postgres
+        gold_run.log, gold_ris_view_run.log
+        metadata.json                  the survey's Postgres rows (zone / phase / cycle / UPC, approvals)
         run_summary.json                exit code, layers, folders, problems
     """
     import shutil
@@ -167,7 +195,8 @@ def collect_logs(ctx, code):
         for f in ("dq_summary.csv", "dq_mismatches.csv", "rule_checks.csv"):
             take(sd / "dq" / f, f"silver_{f}")
     if ctx.get("gold_dir"):
-        take(ctx["gold_dir"] / "gold_run.log", "gold_run.log")
+        for f in ("gold_status_run.log", "gold_run.log", "gold_ris_view_run.log"):
+            take(ctx["gold_dir"] / f, f)
     if o.report_id:
         take(out / "metadata" / f"{o.report_id}.json", "metadata.json")
         take(out / "metadata" / f"{o.report_id}_migration.json", "migration.json")
@@ -382,23 +411,56 @@ def _run(args, ctx):
     if "gold" in layers:
         kpi = silver_dir / "dlm_kpi"
         pm = fetch(o.project_master, work / "master") if o.project_master else None
+        pm = str(Path(pm).resolve()) if pm else None              # gold runs from its own folder
         need = GOLD_TABLES + (GOLD_VIEW_TABLES if pm else [])
         missing = [t for t in need if not (kpi / f"{t}.parquet").is_file()]
         if missing:
             log(f"GOLD not run: silver tables missing {missing}")
             return 1
         gold_dir.mkdir(parents=True, exist_ok=True)
+        status_dir, fetched_dir = work / "silver_data_with_status", work / "fetched_db_tables"
+        import shutil
+        for d in (status_dir, fetched_dir):                       # never the tables of an earlier survey
+            shutil.rmtree(d, ignore_errors=True)
         env = {"INPUT_DIR": str(kpi), "OUTPUT_DIR": str(gold_dir), "INTERMEDIATE_PATH": str(gold_dir / "final_intermediate.csv"),
-               "KEEP_UPCS": "", "FILTER_BY_PROJECT_MASTER": "true" if pm else "false"}
-        cmd = [sys.executable, "run_all.py"]
+               "KEEP_UPCS": "", "FILTER_BY_PROJECT_MASTER": "true" if pm else "false",
+               "SILVER_STATUS_DIR": str(status_dir), "CHILD_DIR": str(kpi),
+               "REPORTING_INTERVALS_TABLE": "master_reporting_interval", "CRACKING_TABLE": "master_cracking"}
+        gold_log = gold_dir / "gold_run.log"
+
+        # 1. silver_update: silver tables + defect_reference_id / current_status / final_status (from Postgres)
+        db = gold_status_env(log, o.no_db)
+        status_env = {**env, "OUTPUT_DIR": str(status_dir), "FETCHED_DIR": str(fetched_dir)}
+        rc = 1
+        if db:
+            rc = run(log, "GOLD silver_update (defect status from Postgres)", [sys.executable, "run_all.py", "--only", "silver_update"],
+                     GOLD, env={**status_env, **db, "REFRESH_DB_TABLES": "true"}, out_file=gold_dir / "gold_status_run.log")
+        if rc != 0:
+            log("  defect status: Postgres not used - every defect counts as Open (no status)")
+            problems.append("gold: defect status not read from Postgres (udm_defect_reference / dlm_defect_case) - "
+                            "all defects counted as Open, see gold_status_run.log")
+            empty_status_tables(fetched_dir)
+            if run(log, "GOLD silver_update (no status)", [sys.executable, "run_all.py", "--only", "silver_update"], GOLD,
+                   env={**status_env, "REFRESH_DB_TABLES": "false"},
+                   out_file=None if db else gold_dir / "gold_status_run.log") != 0:   # keep the Postgres error log
+                log("GOLD failed (silver_update)")
+                return 1
+
+        # 2. ris_trends + intermediate (silver tables; intermediate takes ids / statuses from SILVER_STATUS_DIR)
         if pm:
             env.update(PROJECT_MASTER_PATH=pm, CM_PROJECT_MASTER_PATH=pm)
-        else:
-            cmd += ["--only", "ris_trends", "intermediate"]
-            log("  no --project-master: ris_view is not run")
-        if run(log, "GOLD (RIS KPI)", cmd, GOLD, env=env, out_file=gold_dir / "gold_run.log") != 0:
+        if run(log, "GOLD ris_trends + intermediate", [sys.executable, "run_all.py", "--only", "ris_trends", "intermediate"],
+               GOLD, env=env, out_file=gold_log) != 0:
             log("GOLD failed")
             return 1
+        # 3. ris_view: defect tables WITH status (INPUT_DIR = silver_data_with_status), child 10m from silver
+        if pm:
+            if run(log, "GOLD ris_view", [sys.executable, "run_all.py", "--only", "ris_view"], GOLD,
+                   env={**env, "INPUT_DIR": str(status_dir)}, out_file=gold_dir / "gold_ris_view_run.log") != 0:
+                log("GOLD failed (ris_view)")
+                return 1
+        else:
+            log("  no --project-master: ris_view is not run")
 
     # ---------------------------------------------------------------- POSTGRES PUSH (not active yet)
     # Loads silver dlm_postgres/ + gold tables into the WFM Postgres (wfm_postgres_push.py). Switch on later:

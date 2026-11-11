@@ -23,6 +23,7 @@ def _bool(value):
 @dataclass(frozen=True)
 class Settings:
     input_dir: Path
+    child_dir: Path                 # child 10m tables (IRC counts of ravelling / roughness / rutting)
     output_dir: Path
     cracking_table: str             # file name (no extension) of the cracking source in input_dir
     project_master_path: Path       # contract-module project master (.csv / .xlsx)
@@ -37,6 +38,7 @@ def load_settings(env_file=None):
 
     return Settings(
         input_dir=_path(env("INPUT_DIR", "../Input_silver_data_new")),
+        child_dir=_path(env("CHILD_DIR", "../input_silver_data")),
         output_dir=_path(env("OUTPUT_DIR", "../Output_KPI_data")),
         cracking_table=env("CRACKING_TABLE", "master_cracking").strip(),
         project_master_path=_path(env("PROJECT_MASTER_PATH", "../project_master.xlsx")),

@@ -21,6 +21,7 @@ class Settings:
     reporting_intervals_table: str  # file name (no extension) in input_dir
     default_interval: int           # used where a reporting interval is empty
     cracking_table: str             # file name (no extension) of the cracking source in input_dir
+    silver_status_dir: Path         # silver tables with status (code_silver_update_status) -> defect ids
     log_level: str
 
 
@@ -34,5 +35,6 @@ def load_settings(env_file=None):
         reporting_intervals_table=env("REPORTING_INTERVALS_TABLE", "master_reporting_interval").strip(),
         default_interval=int(env("DEFAULT_INTERVAL", "100")),
         cracking_table=env("CRACKING_TABLE", "master_cracking").strip(),
+        silver_status_dir=_path(env("SILVER_STATUS_DIR", "../silver_data_with_status")),
         log_level=env("LOG_LEVEL", "INFO"),
     )

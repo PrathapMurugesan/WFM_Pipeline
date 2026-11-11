@@ -26,6 +26,26 @@ SILVER_TABLES = ["master_rutting_child_10m", "master_rutting_child_100m", "maste
                  "master_pothole", "master_reporting_interval", "dlm_threshold_mapping"]
 GOLD_TABLES = ["ris_trends_dw", "ris_view_dw"]          # final_intermediate is an intermediate step, not pushed
 
+# Value fixes applied just before the push (the gold CSVs keep their own values).
+# The PG enum ris_view_kpi_status only allows 'open' / 'close' (Databricks: ris_view_app_dic.Status).
+STAGING_VALUE_MAP = {
+    "ris_view_dw": {
+        "Status": {"Open": "open", "Closed": "close"},
+    },
+}
+
+
+def apply_value_map(table, df, log=print):
+    """STAGING_VALUE_MAP for one table: listed values replaced, every other value kept as it is."""
+    for col, vmap in STAGING_VALUE_MAP.get(table, {}).items():
+        if col not in df.columns:
+            log(f"  {table}: column '{col}' not found, value fix skipped")
+            continue
+        before = df[col].value_counts(dropna=False).to_dict()
+        df[col] = df[col].map(lambda v: vmap.get(v, v))
+        log(f"  {table}.{col}: {before} -> {df[col].value_counts(dropna=False).to_dict()}")
+    return df
+
 
 def _engine():
     from sqlalchemy import create_engine
@@ -61,6 +81,8 @@ def push(silver_dir, gold_dir, upc, phase, cycle, dry_run=False, log=print):
         for c in df.columns:
             if df[c].dtype == object and df[c].map(lambda v: isinstance(v, (list, tuple))).any():
                 df[c] = df[c].map(lambda v: ", ".join(map(str, v)) if isinstance(v, (list, tuple)) else v)
+    for t in frames:
+        frames[t] = apply_value_map(t, frames[t], log)
 
     log(f"POSTGRES PUSH -> schema {TARGET_SCHEMA}: " + ", ".join(f"{t} ({len(d)})" for t, d in frames.items())
         + ("  (dry run)" if dry_run else ""))

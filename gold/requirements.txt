@@ -1,6 +1,7 @@
-# Covers all three pipelines (each code_* folder also has its own requirements.txt)
+# All dependencies for run_all.py (union of the four pipeline folders' requirements.txt)
 pandas>=2.2
 numpy
 pyarrow
 openpyxl
 python-dotenv
+psycopg2-binary
