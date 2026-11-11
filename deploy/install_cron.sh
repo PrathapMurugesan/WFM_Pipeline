@@ -32,7 +32,7 @@ ARGS=""
 [[ -n "${PROJECT_MASTER:-}" ]] && ARGS="$ARGS --project-master $PROJECT_MASTER"
 mkdir -p "$REPO/output/logs"
 
-LINE="*/$MINUTES * * * * cd $REPO && flock -n /tmp/wfm_trigger.lock $PYTHON wfm_trigger.py$ARGS >> $REPO/output/logs/trigger_\$(date +\\%Y\\%m\\%d).log 2>&1 $TAG"
+LINE="*/$MINUTES * * * * cd '$REPO' && flock -n /tmp/wfm_trigger.lock '$PYTHON' wfm_trigger.py$ARGS >> '$REPO'/output/logs/trigger_\$(date +\\%Y\\%m\\%d).log 2>&1 $TAG"
 command -v crontab >/dev/null || { echo "ERROR: cron is not installed - run: apt install -y cron && systemctl enable --now cron"; exit 2; }
 # a machine without a crontab yet: 'crontab -l' fails and grep finds nothing - neither may stop the script
 { { crontab -l 2>/dev/null || true; } | { grep -v "$TAG" || true; }; echo "$LINE"; } | crontab -
