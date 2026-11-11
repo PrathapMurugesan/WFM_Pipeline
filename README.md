@@ -34,9 +34,10 @@ wfm_trigger.py  (cron, every 15 min - deploy/install_cron.sh)
                 zip entries recovered, CRC-checked), upload timestamps removed, videos left out
                 (+ _manifests/<survey id>.json)                                               wfm_migrate.py
   5. BRONZE     reads the migrated copy -> SILVER
-  6. CDN        every image the silver pothole / cracking tables refer to -> POST
-                https://nhaidhms-stage-api.dic.org.in/defects/images/upload (image + defect_type);
-                image_urls = the CDN links; list in silver dq/cdn_images.csv                  wfm_cdn.py
+  6. CDN        silver master_pothole / master_cracking rows with image_name + display_defect_id ->
+                POST https://nhaidhms-stage-api.dic.org.in/defects/images/upload (image, defect_type,
+                display_defect_id; HTTP 201 -> data.url) -> new column image_url (dlm_kpi + dlm_postgres;
+                rows without an id get it by image_name); list in silver dq/cdn_images.csv    wfm_cdn.py
   7. GOLD
   8. POSTGRES   silver dlm_postgres + gold -> the same Postgres: written, NOT active yet    wfm_postgres_push.py
   9. results + all logs -> s3://dhms-new-stgae/NSV_Pipeline/ ; survey marked processed

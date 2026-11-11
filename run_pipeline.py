@@ -22,7 +22,7 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
       --strict                               stop when bronze has problems or a silver DQ check fails
 
 Steps: MIGRATE (copy to --stage-s3, unzip, no videos) -> BRONZE (reads the migrated copy) -> SILVER ->
-       IMAGES -> CDN (image_urls = CDN links) -> GOLD -> [POSTGRES PUSH: written, not active] -> upload + logs
+       IMAGES -> CDN (image_url = CDN link per row) -> GOLD -> [POSTGRES PUSH: written, not active] -> upload + logs
 Input: settings.REPORTS_S3_ROOT of the bronze module (s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/)
        <report id>/D1..D4/<upload timestamp>-<file name>
 Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when those are given):
