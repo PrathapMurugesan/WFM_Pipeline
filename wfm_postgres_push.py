@@ -463,7 +463,7 @@ def add_gold_ids(cur, schema, frames, survey_id, upc, log=print):
 
 
 # =============================================================================
-def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None):
+def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None, skip=()):
     silver, gold, e = survey_folders(survey_id, output)
     log(f"\n==================== {survey_id}  UPC {e['upc']}  zone {e['zone']}  phase {e['phase']}  "
         f"cycle {e['cycle']}  ({e.get('status')})")
@@ -473,6 +473,9 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
         frames = {t: d for t, d in frames.items() if t not in GOLD_TABLES}
     elif only == "gold":
         frames = {t: d for t, d in frames.items() if t in GOLD_TABLES}
+    for t in skip:
+        if frames.pop(t, None) is not None:
+            log(f"  {t:30} skipped (--skip)")
     conn, db = _connect()
     log(f"  database {db}, schema {schema}  -  {'WRITE' if do_write else 'INSPECT only (add --write to append)'}")
     try:
@@ -539,12 +542,13 @@ def main(args):
     ap.add_argument("--no-delete", action="store_true", help="do not delete this survey's earlier rows first")
     ap.add_argument("--output", default=str(ROOT / "output"))
     ap.add_argument("--only", choices=["silver", "gold"], help="push only the silver or only the gold tables")
+    ap.add_argument("--skip", nargs="*", default=[], help="pipeline tables to leave out, e.g. master_rutting_child_10m")
     o = ap.parse_args(args)
     table_map = dict(m.split("=", 1) for m in o.map)
     failed = 0
     for sid in o.survey:
         try:
-            push_survey(sid, o.output, o.schema, table_map, o.write, not o.no_delete, only=o.only)
+            push_survey(sid, o.output, o.schema, table_map, o.write, not o.no_delete, only=o.only, skip=o.skip)
         except Exception as e:
             failed += 1
             print(f"  ERROR {sid}: {type(e).__name__}: {e}")
