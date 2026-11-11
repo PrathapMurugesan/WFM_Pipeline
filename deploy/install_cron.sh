@@ -18,7 +18,7 @@ PYTHON="${PYTHON:-$REPO/.venv/bin/python}"
 TAG="# wfm-trigger"
 
 if [[ "${1:-}" == "--remove" ]]; then
-  crontab -l 2>/dev/null | grep -v "$TAG" | crontab - || true
+  { crontab -l 2>/dev/null || true; } | { grep -v "$TAG" || true; } | crontab -
   echo "WFM trigger removed from crontab"
   exit 0
 fi
@@ -33,6 +33,9 @@ ARGS=""
 mkdir -p "$REPO/output/logs"
 
 LINE="*/$MINUTES * * * * cd $REPO && flock -n /tmp/wfm_trigger.lock $PYTHON wfm_trigger.py$ARGS >> $REPO/output/logs/trigger_\$(date +\\%Y\\%m\\%d).log 2>&1 $TAG"
-( crontab -l 2>/dev/null | grep -v "$TAG"; echo "$LINE" ) | crontab -
+command -v crontab >/dev/null || { echo "ERROR: cron is not installed - run: apt install -y cron && systemctl enable --now cron"; exit 2; }
+# a machine without a crontab yet: 'crontab -l' fails and grep finds nothing - neither may stop the script
+{ { crontab -l 2>/dev/null || true; } | { grep -v "$TAG" || true; }; echo "$LINE"; } | crontab -
 echo "installed (every $MINUTES min):"
-crontab -l | grep "$TAG"
+crontab -l | grep "$TAG" || { echo "ERROR: the job is not in the crontab"; exit 1; }
+systemctl is-active --quiet cron 2>/dev/null || echo "WARNING: the cron service is not running - run: systemctl enable --now cron"
