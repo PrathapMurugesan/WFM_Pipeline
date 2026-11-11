@@ -10,6 +10,7 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
                                              not given -> looked up in Postgres (wfm_survey_schedule.id = report id,
                                              + wfm_report; see wfm_metadata.py); found -> the zone/phase/cycle layout
       --no-db                                do not look up zone / phase / cycle / UPC in Postgres
+      --no-status-db                         gold: do not read the defect status from Postgres (all Open)
       --force                                process although D1-D4 are not all approved / a lock is set
       --run-date 2026-11-10                  silver / gold folder run_date= (default: today)
       --project-master <xlsx|csv|s3://...>   gold ris_view needs it (without: ris_trends + intermediate only)
@@ -59,11 +60,12 @@ STATUS_DB_TABLES = {"udm_defect_reference": ["id", "defect_id", "defect_collecti
                     "dlm_defect_case": ["defect_reference_id", "current_status", "defect_type", "record_level"]}
 
 
-def gold_status_env(log, no_db):
+def gold_status_env(log, no_status_db):
     """Environment for gold code_silver_update_status: the DB_* settings from postgres_creds.txt (the same
     database the survey status comes from). Schema: env NSV_STATUS_DB_SCHEMA, else DB_SCHEMA, else public.
-    None when there is no database (--no-db or no credentials)."""
-    if no_db:
+    None when there is no database (--no-status-db or no credentials). Independent of --no-db: the trigger
+    passes --no-db (it already has zone / phase / cycle) but the defect status must still be read."""
+    if no_status_db:
         return None
     try:
         import wfm_metadata
@@ -257,6 +259,7 @@ def _run(args, ctx):
     ap.add_argument("--only", choices=LAYERS)
     ap.add_argument("--strict", action="store_true")
     ap.add_argument("--no-db", action="store_true", help="do not look up zone/phase/cycle/UPC in Postgres")
+    ap.add_argument("--no-status-db", action="store_true", help="gold: no defect status from Postgres (all Open)")
     ap.add_argument("--stage-s3", default=os.environ.get("NSV_STAGE_S3", "s3://dhms-new-stgae/NSV_Pipeline/wfm_reports"),
                     help="where the survey is migrated to (unzipped, no videos) before bronze")
     ap.add_argument("--no-migrate", action="store_true", help="bronze reads the source directly (no copy / unzip)")
@@ -429,7 +432,7 @@ def _run(args, ctx):
         gold_log = gold_dir / "gold_run.log"
 
         # 1. silver_update: silver tables + defect_reference_id / current_status / final_status (from Postgres)
-        db = gold_status_env(log, o.no_db)
+        db = gold_status_env(log, o.no_status_db)
         status_env = {**env, "OUTPUT_DIR": str(status_dir), "FETCHED_DIR": str(fetched_dir)}
         rc = 1
         if db:

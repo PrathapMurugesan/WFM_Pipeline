@@ -8,8 +8,9 @@ metadata (Postgres rows) and the migration manifest. For checking the values som
     python tools/export_surveys.py ... --dest /tmp/exports
 
 Zip: <dest>/<survey id>_<UPC>.zip, paths inside as in output/ (bronze/nsv/zone=.../<UPC>/..., silver/..., gold/...).
-The UPC comes from the processed log, else from output/metadata/<survey id>.json. Every folder named after the
-UPC under output/bronze/nsv, silver, gold and logs is taken (all zone / phase / cycle / run_date folders).
+The UPC / zone / phase / cycle come from the processed log, else from output/metadata/<survey id>.json. Taken:
+<layer>/zone=<z>/phase=<p>/cycle=<c>/<UPC> and <layer>/report=<survey id>/<UPC> under output/bronze/nsv, silver,
+gold and logs (all run folders) - never the folders of another survey of the same UPC.
 """
 import argparse
 import json
@@ -23,15 +24,17 @@ IMAGES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 LAYERS = ["bronze/nsv", "silver", "gold", "logs"]
 
 
-def survey_upc(out, sid, state):
-    if state.get(sid, {}).get("upc"):
-        return state[sid]["upc"]
+def survey_info(out, sid, state):
+    """{'upc', 'zone', 'phase', 'cycle'} from the processed log, else from output/metadata/<survey id>.json."""
+    info = {k: state.get(sid, {}).get(k) for k in ("upc", "zone", "phase", "cycle")}
     meta = out / "metadata" / f"{sid}.json"
-    if meta.is_file():
-        m = re.search(r'"upc"\s*:\s*"([^"]+)"', meta.read_text(encoding="utf-8", errors="replace"))
-        if m:
-            return m.group(1)
-    return None
+    if meta.is_file() and not all(info.values()):
+        text = meta.read_text(encoding="utf-8", errors="replace")
+        for k in info:
+            m = re.search(rf"[\"']{k}[\"']\s*:\s*[\"']([^\"']+)[\"']", text)
+            if m and not info[k]:
+                info[k] = m.group(1)
+    return info
 
 
 def main(args):
@@ -53,14 +56,17 @@ def main(args):
 
     failed = 0
     for sid in surveys:
-        upc = survey_upc(out, sid, state)
+        info = survey_info(out, sid, state)
+        upc = info["upc"]
         if not upc:
             print(f"{sid}: UPC unknown (not in the processed log, no output/metadata/{sid}.json) - skipped")
             failed += 1
             continue
         folder = upc.replace("/", "-")
-        dirs = [d for layer in LAYERS if (out / layer).is_dir()
-                for d in (out / layer).rglob(folder) if d.is_dir() and "_work" not in d.parts]
+        parts = [f"report={sid}/{folder}"]
+        if info["zone"] and info["phase"] and info["cycle"]:
+            parts.insert(0, f"zone={str(info['zone']).upper()}/phase={info['phase']}/cycle={info['cycle']}/{folder}")
+        dirs = [out / layer / p for layer in LAYERS for p in parts if (out / layer / p).is_dir()]
         extra = [f for f in (out / "metadata" / f"{sid}.json", out / "metadata" / f"{sid}_migration.json",
                              state_file, out / "state" / "processed_surveys.csv") if f.is_file()]
         if not dirs:
