@@ -24,6 +24,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -38,6 +39,10 @@ SILVER_TABLES = ["master_rutting_child_10m", "master_rutting_child_100m", "maste
                  "master_pothole"]
 SILVER_REFERENCE = ["master_reporting_interval", "dlm_threshold_mapping"]   # no breach rows: from dlm_kpi
 GOLD_TABLES = ["ris_trends_dw", "ris_view_dw"]          # final_intermediate is an intermediate step, not pushed
+# our column -> database column, where the names differ beyond case / '(in_m)' -> '_m' (see db_column)
+COLUMN_ALIASES = {"ro_id": "region_id",
+                  "roughness_average": "roughness_average_mm_km",
+                  "average_rutting_depth": "average_rutting_depth_mm"}
 
 # Value fixes applied just before the push (the gold CSVs keep their own values).
 # The PG enum ris_view_kpi_status only allows 'open' / 'close' (Databricks: ris_view_app_dic.Status).
@@ -104,11 +109,22 @@ def survey_folders(survey_id, output):
     return silver, gold, e
 
 
-def _lists_to_text(df):
-    for c in df.columns:
-        if df[c].dtype == object and df[c].map(lambda v: isinstance(v, (list, tuple))).any():
-            df[c] = df[c].map(lambda v: ", ".join(map(str, v)) if isinstance(v, (list, tuple)) else v)
-    return df
+def _norm(name):
+    """'Affected_length_CA(in_m)' -> 'affected_length_ca_m', 'UPC Lane Length(in km)' -> 'upc_lane_length_km'."""
+    n = str(name).strip().lower()
+    n = re.sub(r"\(\s*in[\s_]*(k?m)\s*\)", r"_\1", n)
+    return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", n)).strip("_")
+
+
+def db_column(col, db_cols):
+    """The database column for one of our columns (exact, alias, then normalized name), None when none."""
+    if col in db_cols:
+        return col
+    n = _norm(col)
+    for cand in (COLUMN_ALIASES.get(col), COLUMN_ALIASES.get(n), n):
+        if cand and cand in db_cols:
+            return cand
+    return None
 
 
 def load_frames(silver, gold, log=print):
@@ -126,7 +142,7 @@ def load_frames(silver, gold, log=print):
         if f.is_file():
             frames[t] = pd.read_csv(f, low_memory=False)
     for t in list(frames):
-        frames[t] = apply_value_map(t, _lists_to_text(frames[t]), log)
+        frames[t] = apply_value_map(t, frames[t], log)
     return frames
 
 
@@ -147,6 +163,13 @@ def table_columns(cur, schema, table):
     return {r[0]: (r[1], r[2]) for r in cur.fetchall()}
 
 
+def required_columns(cur, schema, table):
+    """NOT NULL columns without a default: the insert fails unless we fill them."""
+    cur.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = %s "
+                "AND is_nullable = 'NO' AND column_default IS NULL", (schema, table))
+    return [r[0] for r in cur.fetchall()]
+
+
 def schemas_with(cur, table):
     cur.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = %s", (table,))
     return sorted(r[0] for r in cur.fetchall())
@@ -158,6 +181,15 @@ def _blank(v):
 
 def _convert(v, data_type, udt):
     """One value -> the Python type psycopg2 sends for the column type."""
+    is_list = isinstance(v, (list, tuple)) or (hasattr(v, "tolist") and getattr(v, "ndim", 0) == 1)
+    if udt.startswith("_"):                                   # ARRAY column (sources, image_urls)
+        if is_list:
+            return [str(x) for x in list(v) if not _blank(x)]
+        if _blank(v) or (isinstance(v, str) and not v.strip()):
+            return None
+        return [x.strip() for x in str(v).split(",") if x.strip()]
+    if is_list:
+        v = ", ".join(map(str, list(v)))
     if _blank(v):
         return None
     if isinstance(v, str) and not v.strip() and data_type not in ("text", "character varying", "character"):
@@ -178,44 +210,69 @@ def _convert(v, data_type, udt):
 
 
 def _key_columns(df):
-    """The columns that identify this survey's rows (whatever the table calls them)."""
+    """The columns that identify this survey's rows (database names, after db_column)."""
     pick = lambda *names: next((c for c in df.columns if c.lower() in names), None)
     return pick("upc"), pick("phase"), pick("cycle")
 
 
 def plan(cur, schema, table, df, table_map):
-    """What would be written for one table: dict with target, columns, rows, existing survey rows ..."""
+    """What would be written for one table: dict with target, columns, rows, existing survey rows ...
+    Our columns are renamed to the database names (db_column); p['frame'] is what gets inserted."""
     target = table_map.get(table, table)
     cols = table_columns(cur, schema, target)
     p = {"table": table, "target": f"{schema}.{target}", "rows": len(df), "exists": bool(cols)}
     if not cols:
         p["found_in_schemas"] = schemas_with(cur, target)
         return p
-    p["columns"] = [c for c in df.columns if c in cols]
-    p["not_in_table"] = [c for c in df.columns if c not in cols]
+    rename = {}
+    for c in df.columns:
+        d = db_column(c, cols)
+        if d and d not in rename.values():
+            rename[c] = d
+    p["renamed"] = {a: b for a, b in rename.items() if a != b}
+    p["not_in_table"] = [c for c in df.columns if c not in rename]
+    df = df[list(rename)].rename(columns=rename)
+    p["frame"] = df
+    p["columns"] = list(df.columns)
     p["table_only"] = [c for c in cols if c not in df.columns]
+    p["required_missing"] = [c for c in required_columns(cur, schema, target) if c not in df.columns]
+    # this survey's rows in the table: survey_id when both sides have it, else upc + phase + cycle; a table that
+    # has neither (e.g. only upc) gets no delete key -> blocked (a delete by upc alone would hit other cycles)
     ucol, pcol, ccol = _key_columns(df)
-    keys = df[[c for c in (ucol, pcol, ccol) if c]].drop_duplicates() if ucol else pd.DataFrame()
-    p["keys"] = (ucol, pcol, ccol)
+    if "survey_id" in df.columns and df["survey_id"].notna().all():
+        kcols = ["survey_id"]
+    elif ucol and pcol and ccol:
+        kcols = [ucol, pcol, ccol]
+    else:
+        kcols = []
+    p["keys"] = kcols
     as_text = lambda v: str(int(v)) if isinstance(v, float) and v.is_integer() else str(v).strip()   # 2.0 -> '2'
+    keys = df[kcols].drop_duplicates() if kcols else pd.DataFrame()
     p["key_values"] = [[as_text(v) for v in row] for row in keys.itertuples(index=False, name=None)]
+    where = " AND ".join(f'CAST("{c}" AS TEXT) = %s' for c in kcols)
     existing = 0
     for row in p["key_values"]:
-        where = " AND ".join(f'CAST("{c}" AS TEXT) = %s' for c in (ucol, pcol, ccol) if c)
         cur.execute(f'SELECT count(*) FROM "{schema}"."{target}" WHERE {where}', row)
         existing += cur.fetchone()[0]
-    p["existing_survey_rows"] = existing
+    p["existing_survey_rows"] = existing if kcols else "?"
+    p["id_clash"] = 0                       # our ids already used by rows of ANOTHER survey (primary key conflict)
+    if "id" in df.columns and len(p["key_values"]) == 1:
+        cur.execute(f'SELECT count(*) FROM "{schema}"."{target}" WHERE CAST(id AS TEXT) = ANY(%s) AND NOT ({where})',
+                    [df["id"].astype(str).tolist()] + p["key_values"][0])
+        p["id_clash"] = cur.fetchone()[0]
+    p["no_key"] = not kcols
+    p["blocked"] = bool(p["required_missing"]) or bool(p["id_clash"]) or p["no_key"]
     return p
 
 
-def write(cur, schema, p, df, delete=True):
+def write(cur, schema, p, delete=True):
     from psycopg2.extras import execute_values
+    df = p["frame"]
     target = p["target"].split(".", 1)[1]
     cols = table_columns(cur, schema, target)
     deleted = 0
     if delete and p["key_values"]:
-        ucol, pcol, ccol = p["keys"]
-        where = " AND ".join(f'CAST("{c}" AS TEXT) = %s' for c in (ucol, pcol, ccol) if c)
+        where = " AND ".join(f'CAST("{c}" AS TEXT) = %s' for c in p["keys"])
         for row in p["key_values"]:
             cur.execute(f'DELETE FROM "{schema}"."{target}" WHERE {where}', row)
             deleted += cur.rowcount
@@ -228,12 +285,16 @@ def write(cur, schema, p, df, delete=True):
 
 
 # =============================================================================
-def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print):
+def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None):
     silver, gold, e = survey_folders(survey_id, output)
     log(f"\n==================== {survey_id}  UPC {e['upc']}  zone {e['zone']}  phase {e['phase']}  "
         f"cycle {e['cycle']}  ({e.get('status')})")
     log(f"  silver {silver}\n  gold   {gold}")
     frames = load_frames(silver, gold, log)
+    if only == "silver":
+        frames = {t: d for t, d in frames.items() if t not in GOLD_TABLES}
+    elif only == "gold":
+        frames = {t: d for t, d in frames.items() if t in GOLD_TABLES}
     conn, db = _connect()
     log(f"  database {db}, schema {schema}  -  {'WRITE' if do_write else 'INSPECT only (add --write to append)'}")
     try:
@@ -245,18 +306,32 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
                         + (f" (exists in schema {p['found_in_schemas']})" if p["found_in_schemas"] else ""))
                     continue
                 log(f"  {t:30} -> {p['target']:45} {p['rows']:6} row(s) | {len(p['columns'])} column(s) | "
-                    f"this survey already there: {p['existing_survey_rows']} row(s)")
+                    f"this survey already there: {p['existing_survey_rows']} row(s)"
+                    + ("   ** BLOCKED **" if p["blocked"] else ""))
+                if p["renamed"]:
+                    log(f"      renamed: {p['renamed']}")
                 if p["not_in_table"]:
                     log(f"      left out (not in the table): {p['not_in_table']}")
                 if p["table_only"]:
-                    log(f"      stay NULL (only in the table): {p['table_only']}")
+                    log(f"      stay NULL / default (only in the table): {p['table_only']}")
+                if p["required_missing"]:
+                    log(f"      REQUIRED (NOT NULL, no default) but not in our data: {p['required_missing']}")
+                if p["id_clash"]:
+                    log(f"      ID CLASH: {p['id_clash']} of our ids already belong to rows of another survey")
+                if p["no_key"]:
+                    log("      NO SURVEY KEY: the table has neither survey_id nor upc + phase + cycle - this survey's "
+                        "earlier rows cannot be told apart (a delete by upc alone would hit other cycles)")
             if not do_write:
                 conn.rollback()
                 return {t: p for t, p in plans.items()}
+            blocked = [t for t, p in plans.items() if p.get("blocked") and p["rows"]]
+            if blocked:
+                raise RuntimeError(f"nothing written - blocked tables {blocked} (required columns / id clash, see "
+                                   f"above); push without them with --only silver, or fix them first")
             done = {}
             for t, p in plans.items():
                 if p["exists"] and p["rows"]:
-                    done[t] = write(cur, schema, p, frames[t], delete)
+                    done[t] = write(cur, schema, p, delete)
             conn.commit()
             for t, (d, n) in done.items():
                 log(f"  WRITTEN {plans[t]['target']:45} deleted {d:6} (earlier rows of this survey) | inserted {n:6}")
@@ -278,12 +353,13 @@ def main(args):
     ap.add_argument("--map", nargs="*", default=[], help="pipeline_table=db_table, e.g. ris_view_dw=ris_view_app_dic")
     ap.add_argument("--no-delete", action="store_true", help="do not delete this survey's earlier rows first")
     ap.add_argument("--output", default=str(ROOT / "output"))
+    ap.add_argument("--only", choices=["silver", "gold"], help="push only the silver or only the gold tables")
     o = ap.parse_args(args)
     table_map = dict(m.split("=", 1) for m in o.map)
     failed = 0
     for sid in o.survey:
         try:
-            push_survey(sid, o.output, o.schema, table_map, o.write, not o.no_delete)
+            push_survey(sid, o.output, o.schema, table_map, o.write, not o.no_delete, only=o.only)
         except Exception as e:
             failed += 1
             print(f"  ERROR {sid}: {type(e).__name__}: {e}")
