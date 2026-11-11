@@ -11,9 +11,21 @@ import json
 import os
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def ist(value):
+    """ISO time (UTC, from the processed log) -> 'YYYY-MM-DD HH:MM IST'."""
+    try:
+        t = datetime.fromisoformat(str(value))
+        t = t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+        return t.astimezone(IST).strftime("%Y-%m-%d %H:%M IST")
+    except (TypeError, ValueError):
+        return "-"
 
 
 def line(title):
@@ -46,6 +58,8 @@ def survey_detail(out, sid, entry, s3):
     print(f"\n{sid}  {entry.get('status', '?').upper()}  UPC {entry.get('upc')}  zone {entry.get('zone')}  "
           f"phase {entry.get('phase')}  cycle {entry.get('cycle')}  run {entry.get('run_date')}  "
           f"({entry.get('minutes')} min, exit {entry.get('exit_code')})")
+    print(f"  ingested    started {ist(entry.get('started_at'))}  finished {ist(entry.get('finished_at'))}  "
+          f"attempts {entry.get('attempts')}")
     run = latest_run_folder(out, upc) if upc else None
     if not run:
         print("  no log folder found")

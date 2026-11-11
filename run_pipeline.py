@@ -465,6 +465,18 @@ def _run(args, ctx):
         else:
             log("  no --project-master: ris_view is not run")
 
+    # ---------------------------------------------------------------- WFM ids into silver (after gold)
+    if "silver" in layers and o.report_id and silver_dir.is_dir():
+        import wfm_ids
+        details = wfm_ids.load_details(o.report_id, out)
+        if details:
+            try:
+                wfm_ids.add_wfm_ids(silver_dir, details, log=log)
+            except Exception as e:
+                problems.append(f"wfm ids: {type(e).__name__}: {e}")
+        else:
+            problems.append(f"wfm ids: no metadata/{o.report_id}.json - survey_id / project_id / piu_id ... not in silver")
+
     # ---------------------------------------------------------------- POSTGRES PUSH (not active yet)
     # Loads silver dlm_postgres/ + gold tables into the WFM Postgres (wfm_postgres_push.py). Switch on later:
     # if "gold" in layers:

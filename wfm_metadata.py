@@ -291,7 +291,11 @@ def survey_details(schedule, found=None):
             "ro": schedule.get("_ro_name"), "state": schedule.get("_state_name"), "piu": schedule.get("_piu_name"),
             "phase": found.get("phase") or _clean("phase", schedule.get("survey_phase")),
             "cycle": found.get("cycle") or _clean("cycle", schedule.get("survey_cycle")),
-            "project_name": schedule.get("project_name"), "schedule_name": schedule.get("schedule_name")}
+            "project_name": schedule.get("project_name"), "schedule_name": schedule.get("schedule_name"),
+            # WFM ids, written into every silver table (wfm_ids.py)
+            "project_id": schedule.get("project_id"), "zone_id": schedule.get("nsv_zone_id"),
+            "ro_id": schedule.get("ro_id"), "state_id": schedule.get("state_id"), "piu_id": schedule.get("piu_id"),
+            "nh_no": schedule.get("nh_no"), "survey_vendor_id": schedule.get("survey_vendor_id")}
 
 
 # =============================================================================

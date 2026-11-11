@@ -218,6 +218,10 @@ def main(args):
         if o.dry_run:
             counts["would_run"] = counts.get("would_run", 0) + 1
             continue
+        meta_file = out / "metadata" / f"{sid}.json"          # the Postgres rows of this run (wfm_ids.py reads 'details')
+        meta_file.parent.mkdir(parents=True, exist_ok=True)
+        meta_file.write_text(json.dumps({"survey_id": sid, "schedule": [sched], "reports": reports, "details": details},
+                                        indent=2, ensure_ascii=False, default=str), encoding="utf-8")
         attempts = (last.get("attempts", 0) + 1) if last.get("status") == "failed" and not (o.force or o.reprocess) else 1
         state.put(sid, status="running", started_at=now(), fingerprint=fp, attempts=attempts, upc=details["upc"])
         started = datetime.now()

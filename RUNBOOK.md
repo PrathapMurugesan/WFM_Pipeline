@@ -78,9 +78,10 @@ Shows every survey: `NEW` = would be processed now; `skip … status '…'` = no
 
 ```bash
 cd /opt/WFM_Pipeline
-OUTPUT_S3=s3://dhms-new-stgae/NSV_Pipeline ./deploy/install_cron.sh 15
-crontab -l | grep wfm-trigger                  # check it is installed
+OUTPUT_S3=s3://dhms-new-stgae/NSV_Pipeline PROJECT_MASTER=$NSV_PROJECT_MASTER ./deploy/install_cron.sh --daily-ist 00:30
+crontab -l | grep wfm-trigger                  # check it is installed (time shown in the server's time zone)
 ```
+- every 15 minutes instead: `./deploy/install_cron.sh 15`
 - runs under `flock`: a run still busy is never started twice
 - log: `/opt/WFM_Pipeline/output/logs/trigger_<yyyymmdd>.log`
 - stop it: `./deploy/install_cron.sh --remove`  ·  other interval: `./deploy/install_cron.sh 30`
@@ -105,6 +106,7 @@ One run's folder (`output/logs/zone=…/<UPC>/run=<time>/`, same in S3):
 | `bronze_d1_run.log` … `d4` | details per deliverable |
 | `silver_run.log`, `silver_dq_summary.csv` | silver tables and the checks against D2 |
 | `cdn_images.csv` | every image: CDN link or error |
+| `metadata.json` | the survey's Postgres rows (ids: project, zone, RO, state, PIU) |
 | `gold_status_run.log` | defect status from Postgres (udm_defect_reference / dlm_defect_case) |
 | `gold_run.log`, `gold_ris_view_run.log` | gold KPIs (ris_trends, final_intermediate, ris_view) |
 
