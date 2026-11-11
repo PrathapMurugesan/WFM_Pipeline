@@ -38,6 +38,9 @@ SILVER_TABLES = ["master_rutting_child_10m", "master_rutting_child_100m", "maste
                  "master_cracking", "master_cracking_child_100m", "master_cracking_parent",
                  "master_pothole"]
 SILVER_REFERENCE = ["master_reporting_interval", "dlm_threshold_mapping"]   # no breach rows: from dlm_kpi
+# defects pushed with ALL rows (breach and non-breach, silver dlm_kpi/) - as the DHMS tables hold them;
+# the other defects push only their breach rows (dlm_postgres/). Change with --all-rows.
+ALL_ROWS_DEFECTS = ["rutting", "roughness"]
 GOLD_TABLES = ["ris_trends_dw", "ris_view_dw"]          # final_intermediate is an intermediate step, not pushed
 # our column -> database column, where the names differ beyond case / '(in_m)' -> '_m' (see db_column)
 COLUMN_ALIASES = {"ro_id": "region_id",
@@ -127,10 +130,11 @@ def db_column(col, db_cols):
     return None
 
 
-def load_frames(silver, gold, log=print):
+def load_frames(silver, gold, log=print, all_rows=ALL_ROWS_DEFECTS):
     frames = {}
     for t in SILVER_TABLES:
-        f = silver / "dlm_postgres" / f"{t}.parquet"
+        whole = any(t.startswith(f"master_{d}") for d in all_rows)
+        f = silver / ("dlm_kpi" if whole else "dlm_postgres") / f"{t}.parquet"
         if f.is_file():
             frames[t] = pd.read_parquet(f)
     for t in SILVER_REFERENCE:
@@ -481,12 +485,13 @@ def add_gold_ids(cur, schema, frames, survey_id, upc, log=print):
 
 # =============================================================================
 def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None, skip=(),
-                null_unmatched=False):
+                null_unmatched=False, all_rows=ALL_ROWS_DEFECTS):
     silver, gold, e = survey_folders(survey_id, output)
     log(f"\n==================== {survey_id}  UPC {e['upc']}  zone {e['zone']}  phase {e['phase']}  "
         f"cycle {e['cycle']}  ({e.get('status')})")
     log(f"  silver {silver}\n  gold   {gold}")
-    frames = load_frames(silver, gold, log)
+    frames = load_frames(silver, gold, log, all_rows)
+    log(f"  silver rows: ALL (breach + non-breach) for {list(all_rows)}, breach rows only for the other defects")
     if only == "silver":
         frames = {t: d for t, d in frames.items() if t not in GOLD_TABLES}
     elif only == "gold":
@@ -566,6 +571,8 @@ def main(args):
     ap.add_argument("--output", default=str(ROOT / "output"))
     ap.add_argument("--only", choices=["silver", "gold"], help="push only the silver or only the gold tables")
     ap.add_argument("--skip", nargs="*", default=[], help="pipeline tables to leave out, e.g. master_rutting_child_10m")
+    ap.add_argument("--all-rows", nargs="*", default=ALL_ROWS_DEFECTS,
+                    help="defects pushed with all rows (default: rutting roughness); '--all-rows' alone = none")
     ap.add_argument("--null-unmatched-fk", action="store_true",
                     help="set a foreign-key column to NULL where the referenced row exists nowhere (nullable columns only)")
     o = ap.parse_args(args)
@@ -574,7 +581,7 @@ def main(args):
     for sid in o.survey:
         try:
             push_survey(sid, o.output, o.schema, table_map, o.write, not o.no_delete, only=o.only, skip=o.skip,
-                        null_unmatched=o.null_unmatched_fk)
+                        null_unmatched=o.null_unmatched_fk, all_rows=o.all_rows)
         except Exception as e:
             failed += 1
             print(f"  ERROR {sid}: {type(e).__name__}: {e}")
