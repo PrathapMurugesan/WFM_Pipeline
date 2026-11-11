@@ -285,6 +285,61 @@ def write(cur, schema, p, delete=True):
 
 
 # =============================================================================
+# Database ids of the gold KPI tables (foreign keys of ris_view_kpi / ris_trends_kpi)
+#   survey_id        -> wfm_survey_schedule.id          = the WFM survey id
+#   survey_source_id -> master_survey_system.id         system_code 'NSV'
+#   upc_id           -> master_upc_project.id           upc = the survey's UPC (else listed in alternate_upcs)
+#   defect_type_id   -> master_defect_type.id           (ris_view only, may stay NULL) NSV defect of that name;
+#                       when several: asset type as in the DLM notebook (Pothole / Cracking 'Flexible Pavement',
+#                       Roughness / Ravelling 'Pavement (NSV)', Rutting 'PAVEMENT'); still several or none -> NULL
+# =============================================================================
+DEFECT_ASSET_TYPE = {"pothole": "flexible pavement", "cracking": "flexible pavement",
+                     "roughness": "pavement (nsv)", "ravelling": "pavement (nsv)", "rutting": "pavement"}
+
+
+def _one(cur, sql, args):
+    cur.execute(sql, args)
+    rows = cur.fetchall()
+    return str(rows[0][0]) if len(rows) == 1 else (None if not rows else "MANY")
+
+
+def add_gold_ids(cur, schema, frames, survey_id, upc, log=print):
+    source = _one(cur, f'SELECT id FROM "{schema}".master_survey_system WHERE upper(system_code) = %s', ("NSV",))
+    upc_id = _one(cur, f'SELECT id FROM "{schema}".master_upc_project WHERE upc = %s', (upc,))
+    if upc_id is None:
+        upc_id = _one(cur, f'SELECT id FROM "{schema}".master_upc_project WHERE CAST(alternate_upcs AS TEXT) LIKE %s',
+                      (f"%{upc}%",))
+    log(f"  gold ids: survey_id {survey_id} | survey_source_id (NSV) {source} | upc_id ({upc}) {upc_id}")
+    bad = [n for n, v in (("survey_source_id", source), ("upc_id", upc_id)) if v in (None, "MANY")]
+    if bad:
+        log(f"      NOT FOUND / NOT UNIQUE: {bad} - the gold tables stay blocked")
+    cur.execute(f'SELECT id, lower(defect_name), lower(coalesce(asset_type, \'\')) FROM "{schema}".master_defect_type '
+                f"WHERE coalesce(is_active, true) AND (upper(coalesce(survey_system, '')) = 'NSV' OR detectable_by_nsv)")
+    by_name = {}
+    for i, name, asset in cur.fetchall():
+        by_name.setdefault(name, []).append((str(i), asset))
+    for t in GOLD_TABLES:
+        if t not in frames:
+            continue
+        df = frames[t].copy()
+        df["survey_id"] = survey_id
+        if source not in (None, "MANY"):
+            df["survey_source_id"] = source
+        if upc_id not in (None, "MANY"):
+            df["upc_id"] = upc_id
+        if t == "ris_view_dw" and "Defect_Type" in df.columns:
+            ids = {}
+            for d in df["Defect_Type"].dropna().unique():
+                cands = by_name.get(str(d).lower(), [])
+                if len(cands) > 1:
+                    cands = [c for c in cands if c[1] == DEFECT_ASSET_TYPE.get(str(d).lower())]
+                ids[d] = cands[0][0] if len(cands) == 1 else None
+            df["defect_type_id"] = df["Defect_Type"].map(ids)
+            log(f"      defect_type_id: " + ", ".join(f"{k}={v or 'NULL'}" for k, v in ids.items()))
+        frames[t] = df
+
+
+# =============================================================================
 def push_survey(survey_id, output, schema, table_map, do_write, delete, log=print, only=None):
     silver, gold, e = survey_folders(survey_id, output)
     log(f"\n==================== {survey_id}  UPC {e['upc']}  zone {e['zone']}  phase {e['phase']}  "
@@ -299,6 +354,8 @@ def push_survey(survey_id, output, schema, table_map, do_write, delete, log=prin
     log(f"  database {db}, schema {schema}  -  {'WRITE' if do_write else 'INSPECT only (add --write to append)'}")
     try:
         with conn.cursor() as cur:
+            if any(t in GOLD_TABLES for t in frames):
+                add_gold_ids(cur, schema, frames, survey_id, e["upc"], log)
             plans = {t: plan(cur, schema, t, df, table_map) for t, df in frames.items()}
             for t, p in plans.items():
                 if not p["exists"]:
