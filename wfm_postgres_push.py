@@ -189,6 +189,27 @@ def _blank(v):
     return v is None or (isinstance(v, float) and math.isnan(v)) or (v is pd.NA) or (v is pd.NaT)
 
 
+def _clean_json(x):
+    """NaN / Infinity (valid in Python's json, not in Postgres) -> null, recursively."""
+    if isinstance(x, float) and (math.isnan(x) or math.isinf(x)):
+        return None
+    if isinstance(x, dict):
+        return {k: _clean_json(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_clean_json(v) for v in x]
+    return x
+
+
+def _json_text(v):
+    """A value for a json / jsonb column: valid JSON text ('{"rutting_avg": NaN}' -> '{"rutting_avg": null}')."""
+    if isinstance(v, str):
+        try:
+            v = json.loads(v)                      # Python reads NaN / Infinity
+        except ValueError:
+            return json.dumps(v)                   # plain text -> a JSON string
+    return json.dumps(_clean_json(v), default=str, allow_nan=False)
+
+
 def _convert(v, data_type, udt):
     """One value -> the Python type psycopg2 sends for the column type."""
     is_list = isinstance(v, (list, tuple)) or (hasattr(v, "tolist") and getattr(v, "ndim", 0) == 1)
@@ -213,7 +234,7 @@ def _convert(v, data_type, udt):
         if udt == "bool":
             return str(v).strip().lower() in ("1", "1.0", "true", "t", "yes", "y")
         if udt in ("json", "jsonb"):
-            return v if isinstance(v, str) else json.dumps(v, default=str)
+            return _json_text(v)
     except (TypeError, ValueError):
         raise ValueError(f"value {v!r} does not fit a {data_type} column")
     return str(v)            # text, varchar, uuid, date, timestamp, enum: Postgres casts the text
