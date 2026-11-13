@@ -1,6 +1,6 @@
 """
-wfm_lake.py - the 'Latest' tables: every silver / gold table as ONE folder of parquet parts holding every
-survey (all UPCs), so reading the folder gives one table. Plus the S3 layout of the whole pipeline (s3_rel).
+wfm_lake.py - the 'Latest' tables: every silver / gold table as ONE parquet file holding every survey
+(all UPCs). Plus the S3 layout of the whole pipeline (s3_rel).
 
     python wfm_lake.py --survey <id> [<id> ...]     add surveys already processed (backfill)
     python wfm_lake.py --survey <id> --no-s3        local only
@@ -10,18 +10,20 @@ run_pipeline.py calls write_latest after gold (+ WFM ids, + Postgres push); --no
 S3 (<root> = --output-s3 / env NSV_OUTPUT_S3, e.g. s3://dhms-new-stgae/NSV):
     <root>/Bronze/zone=<z>/phase=<p>/cycle=<c>/<UPC>/d1..d4/run=<time>/        bronze (as before)
     <root>/Silver/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/dlm_kpi/   silver per survey, ALL rows
-    <root>/Silver/Latest/<table>/part-<survey id>.parquet                       every survey of the table
+    <root>/Silver/Latest/<table>/<table>.parquet                                ONE file, every survey
     <root>/Gold/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/            gold per survey
-    <root>/Gold/Latest/<table>/part-<survey id>.parquet                         every survey of the table
+    <root>/Gold/Latest/<table>/<table>.parquet                                  ONE file, every survey
     <root>/logs/...  <root>/state/wfm_trigger_state.json                        as before
-Locally the same tables are in <output>/latest/silver/<table>/ and <output>/latest/gold/<table>/.
+Locally the same files are in <output>/latest/silver/<table>/ and <output>/latest/gold/<table>/.
 
-Latest: one part per survey. A new survey adds its part; a re-run of the same survey replaces its own part,
-so a survey is never in a Latest table twice. Silver = every row (breach and non-breach); the Postgres push
+Latest: each run reads the table's file (from S3 when --output-s3 is set, else the local one), removes the rows of
+the survey being processed (a re-run never doubles a survey), appends the survey's rows and writes ONE file again
+(overwritten). Any other parquet file in the folder (e.g. the earlier part-<survey id>.parquet files) is merged in
+and then deleted, so the folder always holds exactly one file. Silver = every row (breach and non-breach); the Postgres push
 takes breach_flag = 1 itself. Gold = ris_trends_dw, ris_view_dw, final_intermediate as gold wrote them.
 
 Every row gets (when the table does not already have the column): survey_id, upc, zone, phase, cycle,
-run_date, ingested_at. Types are the same for every survey so the parts always read as one table:
+run_date, ingested_at. Types are the same for every survey so the rows always fit one table:
 numbers -> double, true/false -> boolean, dates -> timestamp, everything else (text, lists) -> string.
 """
 import argparse
@@ -113,10 +115,57 @@ def with_extra(df, info, ingested_at):
 # =============================================================================
 # Write
 # =============================================================================
+def _merge(old_frames, new, sid):
+    """Earlier rows (without this survey) + this survey's rows, one normalized frame."""
+    keep = []
+    for df in old_frames:
+        if "survey_id" in df.columns:
+            df = df[df["survey_id"].astype("string") != sid]
+        if len(df):
+            keep.append(df)
+    if not keep:
+        return new
+    return normalize(pd.concat(keep + [new], ignore_index=True, sort=False))
+
+
+def _update_table(table_dir, name, new, sid, s3=None):
+    """table_dir/<name>.parquet = every file of the folder (local, or S3 when s3=(client, bucket, prefix)) without
+    this survey + new; the other files of the folder are deleted. Returns the total rows of the table."""
+    import tempfile
+    table_dir.mkdir(parents=True, exist_ok=True)
+    target = table_dir / f"{name}.parquet"
+    old, s3_keys = [], []
+    if s3:
+        client, bucket, prefix = s3
+        for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix + "/"):
+            s3_keys += [o["Key"] for o in page.get("Contents", []) if o["Key"].endswith(".parquet")]
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, key in enumerate(s3_keys):
+                f = Path(tmp) / f"{i}.parquet"
+                client.download_file(bucket, key, str(f))
+                old.append(pd.read_parquet(f))
+    else:
+        old = [pd.read_parquet(f) for f in sorted(table_dir.glob("*.parquet"))]
+    df = _merge(old, new, sid)
+    tmp = table_dir / f".{name}.tmp"
+    df.to_parquet(tmp, index=False)
+    shutil.move(str(tmp), str(target))                     # never a half-written file
+    for f in table_dir.glob("*.parquet"):                  # local: only the one file
+        if f != target:
+            f.unlink()
+    if s3:
+        key = f"{prefix}/{name}.parquet"
+        client.upload_file(str(target), bucket, key)       # the new file first, then the old ones go
+        for k in s3_keys:
+            if k != key:
+                client.delete_object(Bucket=bucket, Key=k)
+    return len(df)
+
+
 def write_latest(silver_dir, gold_dir, info, output, output_s3=None, log=print):
-    """This survey's part in every Latest table: <output>/latest/<layer>/<table>/part-<survey id>.parquet,
-    uploaded to <output_s3>/<Layer>/Latest/<table>/. info: survey_id, upc, zone, phase, cycle, run_date.
-    Returns {layer: {table: rows}}."""
+    """This survey into every Latest table: <output>/latest/<layer>/<table>/<table>.parquet (one file), the same
+    file in <output_s3>/<Layer>/Latest/<table>/. info: survey_id, upc, zone, phase, cycle, run_date.
+    Returns {layer: {table: [rows of this survey, rows of the table]}}."""
     sid = info["survey_id"]
     ingested_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     out = Path(output)
@@ -128,18 +177,14 @@ def write_latest(silver_dir, gold_dir, info, output, output_s3=None, log=print):
     done = {}
     for layer, tables in survey_tables(silver_dir, gold_dir).items():
         for table, df in tables.items():
-            rel = f"latest/{layer}/{table}/part-{sid}.parquet"
-            f = out / rel
-            f.parent.mkdir(parents=True, exist_ok=True)
-            tmp = f.with_suffix(".tmp")
-            normalize(with_extra(df, info, ingested_at)).to_parquet(tmp, index=False)
-            shutil.move(str(tmp), str(f))                       # never a half-written part in the folder
-            if client:
-                client.upload_file(str(f), bucket, f"{prefix}/{s3_rel(rel)}".lstrip("/"))
-            done.setdefault(layer, {})[table] = len(df)
+            rel = f"latest/{layer}/{table}"
+            s3 = (client, bucket, f"{prefix}/{s3_rel(rel)}".lstrip("/")) if client else None
+            total = _update_table(out / rel, table, normalize(with_extra(df, info, ingested_at)), sid, s3)
+            done.setdefault(layer, {})[table] = [len(df), total]
         if done.get(layer):
             where = f"{output_s3.rstrip('/')}/{s3_rel(f'latest/{layer}')}" if client else out / "latest" / layer
-            log(f"  Latest {layer:6} {len(done[layer]):3} table(s), {sum(done[layer].values()):8} row(s) -> {where}")
+            log(f"  Latest {layer:6} {len(done[layer]):3} table(s): +{sum(v[0] for v in done[layer].values()):8} row(s) "
+                f"of this survey, {sum(v[1] for v in done[layer].values()):9} row(s) in all -> {where}")
     return done
 
 

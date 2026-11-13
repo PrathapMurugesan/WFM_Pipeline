@@ -147,15 +147,17 @@ Every processed survey is appended to the DHMS Postgres when the cron job has `-
 ```
 NSV/Bronze/zone=<z>/phase=<p>/cycle=<c>/<UPC>/d1..d4/run=<time>/          bronze, as before
 NSV/Silver/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/dlm_kpi/     silver per survey, EVERY row
-NSV/Silver/Latest/<table>/part-<survey id>.parquet                         one folder per table, all surveys
+NSV/Silver/Latest/<table>/<table>.parquet                                 ONE file per table, all surveys
 NSV/Gold/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/               gold per survey
-NSV/Gold/Latest/<table>/part-<survey id>.parquet                           ris_trends_dw, ris_view_dw, final_intermediate
+NSV/Gold/Latest/<table>/<table>.parquet                                   ris_trends_dw, ris_view_dw, final_intermediate
 NSV/logs/   NSV/state/wfm_trigger_state.json
 ```
 
 - Silver keeps ONE copy with every row (breach and non-breach); there is no `dlm_postgres/` any more
   (`NSV_BREACH_COPY=1` brings it back). The Postgres push takes `breach_flag = 1` itself (rutting + roughness: all rows).
-- Latest: a new survey adds its part; a re-run of the same survey replaces its own part (never twice in a table).
+- Latest: each run reads the table's one file, removes the rows of the survey being processed (a re-run never
+  doubles it), appends the survey's rows and overwrites the one file. Other files in the folder are merged in and deleted.
   Every row has survey_id, upc, zone, phase, cycle, run_date, ingested_at. Read a folder as one table:
-  `pd.read_parquet("output/latest/silver/master_cracking")`, `spark.read.parquet("s3://dhms-new-stgae/NSV/Silver/Latest/master_cracking")`.
+  `pd.read_parquet("output/latest/silver/master_cracking/master_cracking.parquet")`,
+  `spark.read.parquet("s3://dhms-new-stgae/NSV/Silver/Latest/master_cracking/")`.
 - Add surveys already processed: `.venv/bin/python wfm_lake.py --survey <id> <id> ...` (`--no-latest` on a run skips it).
