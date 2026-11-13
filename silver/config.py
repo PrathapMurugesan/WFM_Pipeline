@@ -19,6 +19,9 @@ SCHEMA_WORKBOOK = None   # r"D:\NSV\Schema\nsv_defect_schema_master 1.xlsx"  (op
 WRITE_PARQUET = True
 WRITE_EXCEL   = False    # ~1.5 min per 90k-row table; use --no-excel while testing
 WRITE_CSV     = True
+# dlm_postgres/ (a breach_flag = 1 copy of every table): off - the pipeline keeps one copy with every row
+# (dlm_kpi/) and the Postgres push takes the breach rows itself. NSV_BREACH_COPY=1 writes it again.
+WRITE_BREACH_COPY = _os.environ.get('NSV_BREACH_COPY', '') == '1'
 
 # ── Segment sizes ────────────────────────────────────────────────────────────
 PARENT_LENGTH_M = 1000   # 1 km parent table

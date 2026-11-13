@@ -8,8 +8,8 @@ wfm_postgres_push.py - append a survey's silver + gold tables to the EXISTING ta
              --no-delete (keep this survey's earlier rows: duplicates on a rerun) | --output <output folder>
 
 What is pushed (latest run_date of the survey, folders found from the processed log output/state/):
-  silver  <silver>/dlm_postgres/<table>.parquet   breach rows of the 13 defect tables
-          <silver>/dlm_kpi/master_reporting_interval, dlm_threshold_mapping
+  silver  <silver>/dlm_kpi/<table>.parquet  (every row) -> rutting + roughness: all rows, the other defect
+          tables: breach_flag = 1 rows only; master_reporting_interval, dlm_threshold_mapping: all rows
   gold    <gold>/ris_trends_dw.csv, ris_view_dw.csv  (Status mapped Open -> open, Closed -> close)
 Rules:
   - only tables that already exist in the schema are written (a missing table is reported, never created)
@@ -39,9 +39,9 @@ SILVER_TABLES = ["master_rutting_child_10m", "master_rutting_child_100m", "maste
                  "master_ravelling_child_10m", "master_ravelling_child_100m", "master_ravelling_parent",
                  "master_cracking", "master_cracking_child_100m", "master_cracking_parent",
                  "master_pothole"]
-SILVER_REFERENCE = ["master_reporting_interval", "dlm_threshold_mapping"]   # no breach rows: from dlm_kpi
-# defects pushed with ALL rows (breach and non-breach, silver dlm_kpi/) - as the DHMS tables hold them;
-# the other defects push only their breach rows (dlm_postgres/). Change with --all-rows.
+SILVER_REFERENCE = ["master_reporting_interval", "dlm_threshold_mapping"]   # no breach flag: all rows
+# defects pushed with ALL rows (breach and non-breach) - as the DHMS tables hold them; the other defects push
+# only their breach_flag = 1 rows. Silver keeps every row (dlm_kpi/). Change with --all-rows.
 ALL_ROWS_DEFECTS = ["rutting", "roughness"]
 GOLD_TABLES = ["ris_trends_dw", "ris_view_dw"]          # final_intermediate is an intermediate step, not pushed
 # our column -> database column, where the names differ beyond case / '(in_m)' -> '_m' (see db_column)
@@ -135,10 +135,13 @@ def db_column(col, db_cols):
 def load_frames(silver, gold, log=print, all_rows=ALL_ROWS_DEFECTS):
     frames = {}
     for t in SILVER_TABLES:
-        whole = any(t.startswith(f"master_{d}") for d in all_rows)
-        f = silver / ("dlm_kpi" if whole else "dlm_postgres") / f"{t}.parquet"
-        if f.is_file():
-            frames[t] = pd.read_parquet(f)
+        f = silver / "dlm_kpi" / f"{t}.parquet"
+        if not f.is_file():
+            continue
+        df = pd.read_parquet(f)
+        if not any(t.startswith(f"master_{d}") for d in all_rows) and "breach_flag" in df.columns:
+            df = df[pd.to_numeric(df["breach_flag"], errors="coerce") == 1].reset_index(drop=True)
+        frames[t] = df
     for t in SILVER_REFERENCE:
         f = silver / "dlm_kpi" / f"{t}.parquet"
         if f.is_file():

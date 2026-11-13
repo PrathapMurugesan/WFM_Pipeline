@@ -9,9 +9,9 @@ survey marked **processed** (never picked again).
 |---|---|
 | Source uploads | `s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/<survey id>/D1..D4` |
 | Migrated copy (unzipped) | `s3://dhms-new-stgae/NSV_Pipeline/wfm_reports/<survey id>/` + `_manifests/<survey id>.json` |
-| Results | `s3://dhms-new-stgae/NSV_Pipeline/{bronze/nsv, silver, gold}/zone=<z>/phase=<p>/cycle=<c>/<UPC>/` |
-| All logs of a run | `s3://dhms-new-stgae/NSV_Pipeline/logs/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run=<time>/` |
-| Processed log | `s3://dhms-new-stgae/NSV_Pipeline/state/processed_surveys.csv` (+ `wfm_trigger_state.json`) |
+| Results | `s3://dhms-new-stgae/NSV/{Bronze, Silver, Gold}/zone=<z>/phase=<p>/cycle=<c>/<UPC>/` + `Silver/Latest/<table>/`, `Gold/Latest/<table>/` |
+| All logs of a run | `s3://dhms-new-stgae/NSV/logs/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run=<time>/` |
+| Processed log | `s3://dhms-new-stgae/NSV/state/processed_surveys.csv` (+ `wfm_trigger_state.json`) |
 | Code / local copy | `/opt/WFM_Pipeline` (same layout under `/opt/WFM_Pipeline/output/`) |
 
 ---
@@ -38,7 +38,7 @@ chmod 600 /opt/WFM_Pipeline/postgres_creds.txt
 ## 3. Settings (once)
 
 ```bash
-echo 'export NSV_OUTPUT_S3=s3://dhms-new-stgae/NSV_Pipeline' >> ~/.bashrc
+echo 'export NSV_OUTPUT_S3=s3://dhms-new-stgae/NSV' >> ~/.bashrc
 source ~/.bashrc
 ```
 Defaults that normally need no change:
@@ -78,7 +78,7 @@ Shows every survey: `NEW` = would be processed now; `skip … status '…'` = no
 
 ```bash
 cd /opt/WFM_Pipeline
-OUTPUT_S3=s3://dhms-new-stgae/NSV_Pipeline PROJECT_MASTER=$NSV_PROJECT_MASTER ./deploy/install_cron.sh --daily-ist 00:30
+OUTPUT_S3=s3://dhms-new-stgae/NSV PROJECT_MASTER=$NSV_PROJECT_MASTER ./deploy/install_cron.sh --daily-ist 00:30
 crontab -l | grep wfm-trigger                  # check it is installed (time shown in the server's time zone)
 ```
 - every 15 minutes instead: `./deploy/install_cron.sh 15`
@@ -140,21 +140,22 @@ Every processed survey is appended to the DHMS Postgres when the cron job has `-
   parents have); upc / lane / parent_start_chainage / parent_end_chainage keep the link
 - one transaction per survey; the result is in the run's `pipeline.log` and `run_summary.json` (`pg_push`)
 
-## Lake tables (silver_kpi / silver_postgres / gold_kpi / gold_postgres)
+## S3 layout and the Latest tables
 
-Every run (after gold, Postgres push) also writes the survey's tables as parquet parts, one folder per table
-(`wfm_lake.py`; `--no-lake` switches it off). Locally `output/lake/`, in S3 `$NSV_OUTPUT_S3/lake/`
-(env `NSV_LAKE_S3` overrides):
+`NSV_OUTPUT_S3=s3://dhms-new-stgae/NSV` (the cron job: `OUTPUT_S3=s3://dhms-new-stgae/NSV`):
 
 ```
-lake/<dataset>/history/<table>/ingest_date=<YYYY-MM-DD>/part-<survey id>-<time>.parquet   every run appended
-lake/<dataset>/latest/<table>/part-<survey id>.parquet                                  one part per survey
+NSV/Bronze/zone=<z>/phase=<p>/cycle=<c>/<UPC>/d1..d4/run=<time>/          bronze, as before
+NSV/Silver/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/dlm_kpi/     silver per survey, EVERY row
+NSV/Silver/Latest/<table>/part-<survey id>.parquet                         one folder per table, all surveys
+NSV/Gold/zone=<z>/phase=<p>/cycle=<c>/<UPC>/run_date=<date>/               gold per survey
+NSV/Gold/Latest/<table>/part-<survey id>.parquet                           ris_trends_dw, ris_view_dw, final_intermediate
+NSV/logs/   NSV/state/wfm_trigger_state.json
 ```
 
-`silver_kpi` = silver dlm_kpi, `silver_postgres` = silver dlm_postgres, `gold_kpi` = ris_trends_dw / ris_view_dw /
-final_intermediate, `gold_postgres` = ris_trends_kpi / ris_view_kpi (as pushed). Each row has survey_id, upc, zone,
-phase, cycle, run_date, ingest_date, ingested_at. Read a folder as one table, e.g.
-`pd.read_parquet("output/lake/silver_kpi/latest/master_roughness_parent")` or
-`spark.read.parquet("s3://.../lake/silver_kpi/history/master_roughness_parent")`.
-
-Backfill surveys already processed: `.venv/bin/python wfm_lake.py --survey <id> <id> ...`
+- Silver keeps ONE copy with every row (breach and non-breach); there is no `dlm_postgres/` any more
+  (`NSV_BREACH_COPY=1` brings it back). The Postgres push takes `breach_flag = 1` itself (rutting + roughness: all rows).
+- Latest: a new survey adds its part; a re-run of the same survey replaces its own part (never twice in a table).
+  Every row has survey_id, upc, zone, phase, cycle, run_date, ingested_at. Read a folder as one table:
+  `pd.read_parquet("output/latest/silver/master_cracking")`, `spark.read.parquet("s3://dhms-new-stgae/NSV/Silver/Latest/master_cracking")`.
+- Add surveys already processed: `.venv/bin/python wfm_lake.py --survey <id> <id> ...` (`--no-latest` on a run skips it).

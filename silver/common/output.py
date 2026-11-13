@@ -1,6 +1,7 @@
 """
 Output and running:
-  • write_table   → parquet / Excel / CSV into dlm_kpi (all rows) and dlm_postgres (breach rows)
+  • write_table   → parquet / Excel / CSV into dlm_kpi (all rows); dlm_postgres (breach rows) only when
+                    config.WRITE_BREACH_COPY (env NSV_BREACH_COPY=1)
   • run_table     → build → finalize → write, with a one-line summary
   • parse_args / make_project / standalone → command-line options shared by main.py and table scripts
 """
@@ -69,7 +70,7 @@ def write_table(df, table, prj, breach_copy=True):
     kpi = os.path.join(prj.out_dir, 'dlm_kpi')
     _write_one(df, kpi, table)
     n_pg = None
-    if breach_copy and 'breach_flag' in df.columns:
+    if breach_copy and config.WRITE_BREACH_COPY and 'breach_flag' in df.columns:
         pg = df[df['breach_flag'] == 1]
         _write_one(pg, os.path.join(prj.out_dir, 'dlm_postgres'), table)
         n_pg = len(pg)
