@@ -139,3 +139,22 @@ Every processed survey is appended to the DHMS Postgres when the cron job has `-
 - `fk_rutting_c10_parent` / `c100`: rutting children get `parent_id` NULL (the FK references `defect_id`, which only breached
   parents have); upc / lane / parent_start_chainage / parent_end_chainage keep the link
 - one transaction per survey; the result is in the run's `pipeline.log` and `run_summary.json` (`pg_push`)
+
+## Lake tables (silver_kpi / silver_postgres / gold_kpi / gold_postgres)
+
+Every run (after gold, Postgres push) also writes the survey's tables as parquet parts, one folder per table
+(`wfm_lake.py`; `--no-lake` switches it off). Locally `output/lake/`, in S3 `$NSV_OUTPUT_S3/lake/`
+(env `NSV_LAKE_S3` overrides):
+
+```
+lake/<dataset>/history/<table>/ingest_date=<YYYY-MM-DD>/part-<survey id>-<time>.parquet   every run appended
+lake/<dataset>/latest/<table>/part-<survey id>.parquet                                  one part per survey
+```
+
+`silver_kpi` = silver dlm_kpi, `silver_postgres` = silver dlm_postgres, `gold_kpi` = ris_trends_dw / ris_view_dw /
+final_intermediate, `gold_postgres` = ris_trends_kpi / ris_view_kpi (as pushed). Each row has survey_id, upc, zone,
+phase, cycle, run_date, ingest_date, ingested_at. Read a folder as one table, e.g.
+`pd.read_parquet("output/lake/silver_kpi/latest/master_roughness_parent")` or
+`spark.read.parquet("s3://.../lake/silver_kpi/history/master_roughness_parent")`.
+
+Backfill surveys already processed: `.venv/bin/python wfm_lake.py --survey <id> <id> ...`

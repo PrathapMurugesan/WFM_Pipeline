@@ -21,9 +21,10 @@ run_pipeline.py - NSV end to end for ONE uploaded WFM report (= one UPC): bronze
       --from silver | --only gold            start at / run only one layer (bronze already in --output;
                                              give --report-id + --upc, or --zone/--phase/--cycle + --upc)
       --strict                               stop when bronze has problems or a silver DQ check fails
+      --no-lake                              do not write the lake tables (wfm_lake.py)
 
 Steps: MIGRATE (copy to --stage-s3, unzip, no videos) -> BRONZE (reads the migrated copy) -> SILVER ->
-       IMAGES -> CDN (image_url = CDN link per row) -> GOLD -> [POSTGRES PUSH with --pg-push] -> upload + logs
+       IMAGES -> CDN (image_url = CDN link per row) -> GOLD -> [POSTGRES PUSH with --pg-push] -> LAKE -> upload + logs
 Input: settings.REPORTS_S3_ROOT of the bronze module (s3://nhai-dhms-uat/wfm_reports/staging/wfm/reports/)
        <report id>/D1..D4/<upload timestamp>-<file name>
 Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when those are given):
@@ -32,6 +33,7 @@ Output (<part> = report=<report id>/<UPC>, or zone=A/phase=2/cycle=2/<UPC> when 
     <output>/gold/<part>/run_date=<date>/ris_trends_dw.csv final_intermediate.csv ris_view_dw.csv gold_run.log
     <part> from Postgres: zone=<master_zone.zone_code>/phase=<survey_phase>/cycle=<survey_cycle>/<UPC>
     <output>/logs/pipeline_<time>_<UPC>.log
+    <output>/lake/silver_kpi|silver_postgres|gold_kpi|gold_postgres/history|latest/<table>/   (wfm_lake.py)
 S3 access (input / --output-s3 / s3:// files) uses the normal AWS credential chain (env, ~/.aws, IAM role).
 Exit code: 0 = all layers ok, 1 = a layer failed, 2 = finished with problems (bronze problems / DQ FAIL),
            3 = not processed: the survey is not ready (D1-D4 not all approved, or locked) - see --force.
@@ -205,7 +207,7 @@ def collect_logs(ctx, code):
     if ctx.get("silver_dir"):
         take(ctx["silver_dir"] / "dq" / "cdn_images.csv", "cdn_images.csv")
     summary = {"exit_code": code, "survey_id": o.report_id, "upc": o.upc, "part": part, "run": ctx["stamp"],
-               "migrated_to": ctx.get("location"), "cdn": ctx.get("cdn"), "pg_push": ctx.get("pg_push"),
+               "migrated_to": ctx.get("location"), "cdn": ctx.get("cdn"), "pg_push": ctx.get("pg_push"), "lake": ctx.get("lake"),
                "run_date": o.run_date, "folders": {k: str(ctx[k]) for k in ("bronze_dir", "silver_dir", "gold_dir") if ctx.get(k)},
                "files": copied}
     (dest / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -262,6 +264,8 @@ def _run(args, ctx):
     ap.add_argument("--no-status-db", action="store_true", help="gold: no defect status from Postgres (all Open)")
     ap.add_argument("--pg-push", action="store_true", default=os.environ.get("NSV_PG_PUSH", "") == "1",
                     help="append silver + gold to the DHMS Postgres after gold (wfm_postgres_push.py; env NSV_PG_PUSH=1)")
+    ap.add_argument("--no-lake", action="store_true",
+                    help="do not write the lake tables (silver_kpi / silver_postgres / gold_kpi / gold_postgres)")
     ap.add_argument("--stage-s3", default=os.environ.get("NSV_STAGE_S3", "s3://dhms-new-stgae/NSV_Pipeline/wfm_reports"),
                     help="where the survey is migrated to (unzipped, no videos) before bronze")
     ap.add_argument("--no-migrate", action="store_true", help="bronze reads the source directly (no copy / unzip)")
@@ -496,6 +500,21 @@ def _run(args, ctx):
         except Exception as e:
             ctx["pg_push"] = {"error": f"{type(e).__name__}: {e}"}
             problems.append(f"postgres push: {type(e).__name__}: {e} - nothing of this survey written")
+
+    # ---------------------------------------------------------------- LAKE (wfm_lake.py)
+    # silver_kpi / silver_postgres / gold_kpi / gold_postgres: one folder per table, parquet parts
+    # (history/<table>/ingest_date=<date>/ appended every run, latest/<table>/ one part per survey)
+    if not o.no_lake and o.report_id and ("silver" in layers or "gold" in layers) and silver_dir.is_dir():
+        log("======== LAKE ========")
+        try:
+            import wfm_lake
+            ctx["lake"] = wfm_lake.write_lake(
+                silver_dir, gold_dir, {"survey_id": o.report_id, "upc": o.upc or upc.replace("-", "/"), "zone": o.zone,
+                                       "phase": o.phase, "cycle": o.cycle, "run_date": o.run_date},
+                out, wfm_lake.lake_s3_default(o.output_s3), log=log)
+        except Exception as e:
+            ctx["lake"] = {"error": f"{type(e).__name__}: {e}"}
+            problems.append(f"lake: {type(e).__name__}: {e}")
 
     # ---------------------------------------------------------------- upload
     if o.output_s3:
